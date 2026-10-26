@@ -11,5 +11,11 @@
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
+
+  <script>
+  navigator.serviceWorker.getRegistrations().then(function(regs) {
+    for (var r of regs) r.unregister();
+  });
+  </script>
 </body>
 </html>
