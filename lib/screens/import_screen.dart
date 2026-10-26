@@ -1,11 +1,15 @@
+import 'dart:convert';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../main.dart';
 import '../models/vpn_config.dart';
 
 class ImportScreen extends StatefulWidget {
   const ImportScreen({super.key});
+
   @override
   State<ImportScreen> createState() => _ImportScreenState();
 }
@@ -16,13 +20,20 @@ class _ImportScreenState extends State<ImportScreen> {
   String? _error;
 
   Future<void> _pick() async {
-    final res = await FilePicker.platform.pickFiles();
-    if (res == null || res.files.single.path == null) return;
-    // قراءة محتوى الملف
-    final content = await File(res.files.single.path!).readAsString();
-    _confCtrl.text = content;
-    if (_nameCtrl.text.isEmpty && res.files.single.name.contains('.')) {
-      _nameCtrl.text = res.files.single.name.split('.').first;
+    final res = await FilePicker.platform.pickFiles(withData: true);
+    if (res == null) return;
+    final f = res.files.single;
+    if (f.bytes == null) {
+      setState(() => _error = 'تعذّر قراءة الملف');
+      return;
+    }
+    final content = utf8.decode(f.bytes!);
+    setState(() {
+      _confCtrl.text = content;
+      _error = null;
+    });
+    if (_nameCtrl.text.isEmpty && f.name.contains('.')) {
+      _nameCtrl.text = f.name.split('.').first;
     }
   }
 
@@ -30,13 +41,22 @@ class _ImportScreenState extends State<ImportScreen> {
     try {
       final cfg = VpnConfig.fromConf(
         _confCtrl.text,
-        name: _nameCtrl.text.trim().isEmpty ? 'imported' : _nameCtrl.text.trim(),
+        name: _nameCtrl.text.trim().isEmpty
+            ? 'imported'
+            : _nameCtrl.text.trim(),
       );
       await context.read<VpnController>().store.add(cfg);
       if (mounted) Navigator.pop(context);
     } catch (e) {
       setState(() => _error = e.toString());
     }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _confCtrl.dispose();
+    super.dispose();
   }
 
   @override
@@ -51,7 +71,9 @@ class _ImportScreenState extends State<ImportScreen> {
             TextField(
               controller: _nameCtrl,
               decoration: const InputDecoration(
-                  labelText: 'اسم الإعدادات', border: OutlineInputBorder()),
+                labelText: 'اسم الإعدادات',
+                border: OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 12),
             TextField(
