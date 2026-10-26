@@ -1,14 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
 
-/// يستخدم wg-quick (Linux/macOS) أو wireguard.exe (Windows) كـ subprocess.
-/// هذا أبسط تنفيذ؛ يمكنك لاحقاً استبداله بـ FFI + wireguard-go.
 class VpnBridgeDesktop implements VpnBridge {
   final _controller = StreamController<VpnState>.broadcast();
   VpnState _state = const VpnState();
@@ -25,8 +25,6 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<bool> requestPermission() async {
-    // على Linux: تحقق من وجود wg-quick
-    // على Windows: تحقق من wireguard.exe
     if (_isWindows) {
       final r = await Process.run('where', ['wireguard.exe']);
       return r.exitCode == 0;
@@ -40,7 +38,8 @@ class VpnBridgeDesktop implements VpnBridge {
     if (_state.status == VpnStatus.connected ||
         _state.status == VpnStatus.connecting) return;
 
-    _emit(VpnState(status: VpnStatus.connecting, activeConfigName: config.name));
+    _emit(VpnState(
+        status: VpnStatus.connecting, activeConfigName: config.name));
 
     try {
       final dir = await getApplicationSupportDirectory();
@@ -48,11 +47,9 @@ class VpnBridgeDesktop implements VpnBridge {
       await File(_confPath!).writeAsString(config.toConf());
 
       if (_isWindows) {
-        // wireguard.exe /installtunnelservice <conf>
-        _process = await Process.start('wireguard.exe',
-            ['/installtunnelservice', _confPath!]);
+        _process = await Process.start(
+            'wireguard.exe', ['/installtunnelservice', _confPath!]);
       } else {
-        // Linux/macOS: wg-quick up <path>
         _process = await Process.start(
             'sudo', ['wg-quick', 'up', _confPath!]);
       }
@@ -88,16 +85,15 @@ class VpnBridgeDesktop implements VpnBridge {
     }
   }
 
-  /// مراقب بسيط: يتحقق كل 15 ثانية أن النفق ما زال حياً
   void _startWatchdog(VpnConfig config) {
     _watchdog?.cancel();
     _watchdog = Timer.periodic(const Duration(seconds: 15), (_) async {
       if (_state.status != VpnStatus.connected) return;
       final alive = await _isTunnelAlive(config.name);
       if (!alive) {
-        // إعادة اتصال تلقائي — الإعدادات ثابتة فلا تتغير العناوين
         _emit(VpnState(
-            status: VpnStatus.connecting, activeConfigName: config.name));
+            status: VpnStatus.connecting,
+            activeConfigName: config.name));
         await _forceDown(config.name);
         await Future.delayed(const Duration(seconds: 2));
         await connect(config);
@@ -118,9 +114,9 @@ class VpnBridgeDesktop implements VpnBridge {
   Future<void> _forceDown(String name) async {
     try {
       if (_isWindows) {
-        await Process.run('wireguard.exe',
-            ['/uninstalltunnelservice', name]);
-      } else {
+        await Process.run(
+            'wireguard.exe', ['/uninstalltunnelservice', name]);
+      } else if (_confPath != null) {
         await Process.run('sudo', ['wg-quick', 'down', _confPath!]);
       }
     } catch (_) {}
@@ -130,12 +126,16 @@ class VpnBridgeDesktop implements VpnBridge {
   Future<void> disconnect() async {
     _watchdog?.cancel();
     _emit(VpnState(
-        status: VpnStatus.disconnecting, activeConfigName: _state.activeConfigName));
+      status: VpnStatus.disconnecting,
+      activeConfigName: _state.activeConfigName,
+    ));
     try {
       await _forceDown(_state.activeConfigName ?? '');
     } finally {
       if (_confPath != null) {
-        try { await File(_confPath!).delete(); } catch (_) {}
+        try {
+          await File(_confPath!).delete();
+        } catch (_) {}
       }
       _emit(const VpnState());
     }
@@ -143,11 +143,8 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<void> onNetworkChanged() async {
-    // على desktop: إذا كنا متصلين، أعد إنشاء الاتصال بعد تغيّر المسار
     if (_state.status != VpnStatus.connected) return;
-    // لا نفعل شيئاً — PersistentKeepalive في الإعدادات يتكفل بذلك
-    // لكن يمكن إجبار "kick" عبر:
-    //   Linux: wg set <iface> peer <pub> endpoint <new-ip:port>
+    // PersistentKeepalive في الإعدادات يتكفل بالاتصال
   }
 
   void _emit(VpnState s) {
@@ -157,6 +154,7 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Stream<VpnState> get stateStream => _controller.stream;
+
   @override
   VpnState get currentState => _state;
 
