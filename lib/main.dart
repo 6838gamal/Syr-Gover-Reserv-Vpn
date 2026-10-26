@@ -1,7 +1,6 @@
 import 'dart:async';
-import 'dart:io' show Platform, SocketException, InternetAddress;
 
-import 'package:flutter/foundation.dart' show kIsWeb, ChangeNotifier;
+import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,11 +8,10 @@ import 'app.dart';
 import 'models/vpn_config.dart';
 import 'models/vpn_state.dart';
 import 'services/config_store.dart';
+import 'services/internet_check.dart';
 import 'services/vpn_bridge.dart';
-import 'services/vpn_bridge_android.dart';
-import 'services/vpn_bridge_desktop.dart';
+import 'services/vpn_bridge_factory.dart';
 
-/// يتحكم بدورة حياة الـ bridge + الحالة + إعادة الاتصال التلقائي
 class VpnController extends ChangeNotifier {
   final VpnBridge bridge;
   final ConfigStore store = ConfigStore();
@@ -37,53 +35,24 @@ class VpnController extends ChangeNotifier {
   }
 
   void _onStateChanged(VpnState s) {
-    if (s.status == VpnStatus.connected) {
-      _wasConnectedBeforeOutage = true;
-    }
+    if (s.status == VpnStatus.connected) _wasConnectedBeforeOutage = true;
     notifyListeners();
   }
 
-  // ---------------------------------------------------------------------------
-  // مراقب الشبكة: كل 10 ثوانٍ نتحقق إن كان الإنترنت عاد بعد انقطاع
-  // ---------------------------------------------------------------------------
   void _startNetworkWatchdog() {
     _networkWatchdog?.cancel();
-    _networkWatchdog =
-        Timer.periodic(const Duration(seconds: 10), (_) async {
+    _networkWatchdog = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!_autoReconnectEnabled) return;
       if (state.status != VpnStatus.connected) return;
       if (!_wasConnectedBeforeOutage) return;
-
-      final online = await _hasInternet();
-      if (!online) {
-        // الإنترنت انقطع — انتظر الإعادة
-        return;
-      }
-
-      // الإنترنت عاد — اطلب "kick" من الجسر (لا يغيّر أي إعدادات)
+      final online = await hasInternet();
+      if (!online) return;
       try {
         await bridge.onNetworkChanged();
-      } catch (_) {
-        // لا نُفشل الدورة — فقط نحاول في المرة القادمة
-      }
+      } catch (_) {}
     });
   }
 
-  Future<bool> _hasInternet() async {
-    try {
-      final result = await InternetAddress.lookup('1.1.1.1')
-          .timeout(const Duration(seconds: 3));
-      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
-    } on SocketException {
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // أوامر عالية المستوى للواجهة
-  // ---------------------------------------------------------------------------
   Future<bool> connect(VpnConfig config) async {
     final ok = await bridge.requestPermission();
     if (!ok) return false;
@@ -105,36 +74,14 @@ class VpnController extends ChangeNotifier {
   }
 }
 
-// -----------------------------------------------------------------------------
-// نقطة الدخول
-// -----------------------------------------------------------------------------
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ---------- معاينة الويب فقط ----------
-  if (kIsWeb) {
-    runApp(
-      ChangeNotifierProvider(
-        create: (_) => _FakeVpnController(),
-        child: const MyVpnApp(),
-      ),
-    );
-    return;
-  }
-
-  // ---------- اختيار الجسر حسب المنصة ----------
-  final VpnBridge bridge;
-  if (Platform.isAndroid || Platform.isIOS) {
-    bridge = VpnBridgeAndroid();
-  } else {
-    // Linux / Windows / macOS
-    bridge = VpnBridgeDesktop();
-  }
+  final VpnBridge bridge = createVpnBridge();
 
   try {
     await bridge.init();
   } catch (e, st) {
-    // بدلاً من انهيار صامت، اعرض شاشة خطأ
     runApp(_BootstrapErrorApp(message: e.toString(), stack: st.toString()));
     return;
   }
@@ -150,24 +97,6 @@ void main() async {
   );
 }
 
-// -----------------------------------------------------------------------------
-// Stub لواجهة الويب (لا يعمل VPN في المتصفح)
-// -----------------------------------------------------------------------------
-class _FakeVpnController extends ChangeNotifier {
-  VpnState get state => const VpnState(
-        status: VpnStatus.disconnected,
-        errorMessage: 'VPN غير مدعوم في المتصفح — هذه معاينة للواجهة فقط',
-      );
-  bool autoReconnectEnabled = true;
-  final ConfigStore store = ConfigStore();
-
-  Future<bool> connect(VpnConfig _) async => false;
-  Future<void> disconnect() async {}
-}
-
-// -----------------------------------------------------------------------------
-// شاشة خطأ التهيئة (لو فشل bridge.init)
-// -----------------------------------------------------------------------------
 class _BootstrapErrorApp extends StatelessWidget {
   final String message;
   final String stack;
@@ -188,10 +117,9 @@ class _BootstrapErrorApp extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'فشل بدء التشغيل',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              ),
+              const Text('فشل بدء التشغيل',
+                  style:
+                      TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
               Text(message, style: const TextStyle(color: Colors.redAccent)),
               const SizedBox(height: 12),
@@ -200,10 +128,9 @@ class _BootstrapErrorApp extends StatelessWidget {
                   child: Text(
                     stack,
                     style: const TextStyle(
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                      color: Colors.white70,
-                    ),
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: Colors.white70),
                   ),
                 ),
               ),
