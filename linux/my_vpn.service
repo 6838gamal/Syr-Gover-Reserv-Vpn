@@ -1,0 +1,15 @@
+[Unit]
+Description=My VPN WireGuard Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/wg-quick up /etc/wireguard/myvpn.conf
+ExecStop=/usr/bin/wg-quick down /etc/wireguard/myvpn.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
