@@ -40,6 +40,29 @@ jobs:
       - name: Build web
         run: flutter build web --release --base-href "/Syr-Gover-Reserv-Vpn/"
 
+      - name: Verify build artifacts
+        run: |
+          echo "=== base href in index.html ==="
+          grep -o '<base href="[^"]*"' build/web/index.html || echo "NO BASE TAG FOUND"
+          echo ""
+          echo "=== files in build/web (root) ==="
+          ls -la build/web/
+          echo ""
+          echo "=== main.dart.js exists? ==="
+          ls -la build/web/main.dart.js || echo "main.dart.js MISSING!"
+          echo ""
+          echo "=== flutter_bootstrap.js exists? ==="
+          ls -la build/web/flutter_bootstrap.js || echo "flutter_bootstrap.js MISSING!"
+          echo ""
+          echo "=== flutter.js exists? ==="
+          ls -la build/web/flutter.js || echo "flutter.js MISSING!"
+          echo ""
+          echo "=== canvaskit folder ==="
+          ls -la build/web/canvaskit/ 2>/dev/null | head -20 || echo "canvaskit folder MISSING!"
+
+      - name: Ensure .nojekyll
+        run: touch build/web/.nojekyll
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
