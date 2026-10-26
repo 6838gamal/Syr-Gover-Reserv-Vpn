@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../main.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
-import '../services/vpn_bridge.dart';
 import 'import_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -23,29 +24,29 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadConfigs() async {
-    final store = context.read<VpnController>().store;
-    final list = await store.loadAll();
+    final ctrl = context.read<VpnController>();
+    final list = await ctrl.store.loadAll();
+    if (!mounted) return;
     setState(() {
       _configs = list;
       _selected = list.isNotEmpty ? list.first : null;
     });
   }
 
-  Future<void> _toggle(VpnBridge bridge) async {
-    final st = bridge.currentState.status;
+  Future<void> _toggle() async {
+    final ctrl = context.read<VpnController>();
+    final st = ctrl.state.status;
     if (st == VpnStatus.connected) {
-      await bridge.disconnect();
+      await ctrl.disconnect();
     } else if (st == VpnStatus.disconnected && _selected != null) {
-      final ok = await bridge.requestPermission();
-      if (!ok) return;
-      await bridge.connect(_selected!);
+      await ctrl.connect(_selected!);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final bridge = context.watch<VpnBridge>();
-    final state = bridge.currentState;
+    final ctrl = context.watch<VpnController>();
+    final state = ctrl.state;
 
     return Scaffold(
       appBar: AppBar(
@@ -53,12 +54,26 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
+            tooltip: 'استيراد',
             onPressed: () async {
               await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const ImportScreen()),
               );
-              _loadConfigs();
+              await _loadConfigs();
+            },
+          ),
+          IconButton(
+            icon: Icon(
+              ctrl.autoReconnectEnabled
+                  ? Icons.sync
+                  : Icons.sync_disabled,
+            ),
+            tooltip: ctrl.autoReconnectEnabled
+                ? 'إعادة الاتصال التلقائي: مفعّل'
+                : 'إعادة الاتصال التلقائي: متوقف',
+            onPressed: () {
+              ctrl.autoReconnectEnabled = !ctrl.autoReconnectEnabled;
             },
           ),
         ],
@@ -88,13 +103,14 @@ class _HomeScreenState extends State<HomeScreen> {
               Text('Address: ${_selected!.address}'),
               Text('DNS: ${_selected!.dns}'),
               Text('Keepalive: ${_selected!.persistentKeepalive}s'),
+              Text('MTU: ${_selected!.mtu}'),
             ],
             const Spacer(),
             FilledButton.icon(
               onPressed: (state.status == VpnStatus.connecting ||
                       state.status == VpnStatus.disconnecting)
                   ? null
-                  : () => _toggle(bridge),
+                  : _toggle,
               icon: Icon(
                 state.status == VpnStatus.connected
                     ? Icons.stop
@@ -134,15 +150,21 @@ class _StatusCard extends StatelessWidget {
           children: [
             Icon(Icons.shield, size: 64, color: color),
             const SizedBox(height: 8),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 22,
-                    color: color,
-                    fontWeight: FontWeight.bold)),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 22,
+                color: color,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             if (state.errorMessage != null) ...[
               const SizedBox(height: 8),
-              Text(state.errorMessage!,
-                  style: const TextStyle(color: Colors.redAccent)),
+              Text(
+                state.errorMessage!,
+                style: const TextStyle(color: Colors.redAccent),
+                textAlign: TextAlign.center,
+              ),
             ],
           ],
         ),
