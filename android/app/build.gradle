@@ -1,0 +1,19 @@
+android {
+    namespace "com.example.myvpn"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.myvpn"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+}
+
+dependencies {
+    // مكتبة WireGuard الرسمية
+    implementation("com.wireguard.android:tunnel:1.0.20230706")
+    // Kotlin coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+}
