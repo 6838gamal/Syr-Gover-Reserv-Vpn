@@ -1,27 +1,29 @@
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 
+/// العقد الموحد الذي تنفذه كل منصة
 abstract class VpnBridge {
-  /// يهيّئ الجسر (يُستدعى في main قبل runApp)
+  /// تهيئة الجسر (يُستدعى في main قبل runApp)
   Future<void> init();
 
-  /// يطلب صلاحية VPN من المستخدم (Android) أو لا يفعل شيئاً (desktop)
+  /// طلب صلاحية VPN (Android) أو التحقق من توفر الأدوات (Desktop)
   Future<bool> requestPermission();
 
+  /// الاتصال بإعدادات معيّنة
   Future<void> connect(VpnConfig config);
+
+  /// قطع الاتصال
   Future<void> disconnect();
 
   /// تدفق حالة الاتصال
   Stream<VpnState> get stateStream;
+
+  /// الحالة الحالية
   VpnState get currentState;
 
   /// يُستدعى عند تغيّر الشبكة (لإعادة الاتصال تلقائياً)
   Future<void> onNetworkChanged();
 
+  /// تنظيف الموارد
   void dispose();
-}
-
-/// Factory يختار التنفيذ المناسب حسب المنصة
-VpnBridge createVpnBridge() {
-  throw UnimplementedError('يُنفذ في main حسب المنصة');
 }
