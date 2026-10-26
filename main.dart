@@ -5,6 +5,15 @@ import 'app.dart';
 import 'services/vpn_bridge.dart';
 import 'services/vpn_bridge_android.dart';
 import 'services/vpn_bridge_desktop.dart';
+import 'services/config_store.dart';
+
+class VpnController extends ChangeNotifier {
+  final VpnBridge bridge;
+  final ConfigStore store = ConfigStore();
+  VpnController(this.bridge) {
+    bridge.stateStream.listen((_) => notifyListeners());
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,9 +27,12 @@ void main() async {
   await bridge.init();
 
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => VpnController(bridge),
+    MultiProvider(
+      providers: [
+        Provider<VpnBridge>.value(value: bridge),
+        ChangeNotifierProvider(create: (_) => VpnController(bridge)),
+      ],
+      child: const MyVpnApp(),
     ),
-    // ملاحظة: runApp يستقبل widget واحد فقط. استخدم MultiProvider.
   );
 }
