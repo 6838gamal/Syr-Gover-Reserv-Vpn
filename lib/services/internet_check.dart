@@ -1,0 +1,4 @@
+import 'internet_check_stub.dart'
+    if (dart.library.io) 'internet_check_io.dart' as impl;
+
+Future<bool> hasInternet() => impl.hasInternet();
