@@ -1,0 +1,43 @@
+name: Build Flutter EXE (Single File)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'   # غيّرها حسب إصدار مشروعك
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Create Installer (Single EXE)
+        run: iscc installer.iss
+
+      - name: Upload Single EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-exe
+          path: build/installer/*.exe
+          retention-days: 30
