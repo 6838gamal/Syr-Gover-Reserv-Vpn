@@ -13,11 +13,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ✅ تجهيز MSBuild / Visual Studio 2022 قبل أي خطوة بناء
+      # ✅ 1) تجهيز MSBuild / VS 2022
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ✅ تشخيص: عرض مسار Visual Studio المثبت (للتأكد فقط)
+      # ✅ 2) تشخيص: عرض مسار VS المثبت (يجب أن يظهر في السجل)
       - name: Check Visual Studio installation
         run: |
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
@@ -28,7 +28,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.0'   # أحدث stable مستقر (عدّله حسب مشروعك)
+          flutter-version: '3.27.0'
           channel: 'stable'
           cache: true
 
@@ -38,13 +38,17 @@ jobs:
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
-      # ✅ إجبار CMake على استخدام VS2022 بدل VS2019
+      # ✅ 3) حذف build cache القديم (سبب VS2019)
+      - name: Clean build directory
+        run: |
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+
+      # ✅ 4) البناء مع فرض VS2022
       - name: Build Windows Release
         env:
           CMAKE_GENERATOR: "Visual Studio 17 2022"
         run: flutter build windows --release
 
-      # ✅ رفع المخرجات الخام (اختياري لكن مفيد للتشخيص)
       - name: Upload raw Windows build
         uses: actions/upload-artifact@v4
         with:
@@ -55,6 +59,9 @@ jobs:
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
+
+      - name: Prepare installer output dir
+        run: mkdir build\installer -Force
 
       - name: Create Installer (Single EXE)
         run: iscc installer.iss
