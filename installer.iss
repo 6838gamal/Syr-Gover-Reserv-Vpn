@@ -1,11 +1,11 @@
 ; ============================================
-;  Inno Setup Script - Syr Gover Reserv VPN
+;  Inno Setup Script - DefyxVPN
 ; ============================================
 
-#define AppName "Syr Gover Reserv VPN"
+#define AppName "DefyxVPN"
 #define AppVersion "1.0.0"
 #define AppPublisher "MyCompany"
-#define AppExeName "SyrGoverReservVpn.exe"   ; ← طابق BINARY_NAME
+#define AppExeName "SyrGoverIpReservVPN.exe"
 #define BuildDir "build\windows\x64\runner\Release"
 
 [Setup]
@@ -22,17 +22,12 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-
-; --- تحسينات ---
 SetupIconFile=windows\runner\resources\app_icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 CloseApplications=yes
 RestartApplications=no
 AppMutex={#AppName}Mutex
-
-; --- صلاحيات: اختر واحدة ---
-; PrivilegesRequired=admin      ; إذا VPN يحتاج تعديل شبكة
-PrivilegesRequired=lowest       ; إذا يعتمد على HKCU فقط (launch_at_startup)
+PrivilegesRequired=lowest
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
