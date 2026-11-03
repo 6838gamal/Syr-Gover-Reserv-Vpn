@@ -13,11 +13,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ✅ 1) تجهيز MSBuild / VS 2022
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ✅ 2) تشخيص: عرض مسار VS المثبت (يجب أن يظهر في السجل)
       - name: Check Visual Studio installation
         run: |
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
@@ -38,12 +36,10 @@ jobs:
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
-      # ✅ 3) حذف build cache القديم (سبب VS2019)
       - name: Clean build directory
         run: |
           if (Test-Path build) { Remove-Item -Recurse -Force build }
 
-      # ✅ 4) البناء مع فرض VS2022
       - name: Build Windows Release
         env:
           CMAKE_GENERATOR: "Visual Studio 17 2022"
