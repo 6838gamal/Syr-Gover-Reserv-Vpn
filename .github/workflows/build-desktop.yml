@@ -7,21 +7,25 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    # ✅ استخدام windows-2022 (يحتوي VS2022 الذي يعرفه Flutter 3.27)
+    # windows-latest حالياً = VS18 (2026) الذي لا يدعمه Flutter 3.27
+    runs-on: windows-2022
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ✅ تجهيز MSBuild
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Check Visual Studio installation
+      # ✅ تشخيص: عرض إصدار VS المثبت (للتأكد أنه 17.x وليس 18.x)
+      - name: Verify Visual Studio version
         run: |
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
             -latest -products * `
             -requires Microsoft.Component.MSBuild `
-            -property installationPath
+            -property installationVersion,installationPath
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -36,15 +40,16 @@ jobs:
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
+      # ✅ حذف build cache القديم (يمنع استخدام VS2019 من cache)
       - name: Clean build directory
         run: |
           if (Test-Path build) { Remove-Item -Recurse -Force build }
 
+      # ✅ بناء Release (Flutter سيكتشف VS2022 تلقائياً)
       - name: Build Windows Release
-        env:
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
         run: flutter build windows --release
 
+      # ✅ رفع المخرجات الخام (مفيد للتشخيص)
       - name: Upload raw Windows build
         uses: actions/upload-artifact@v4
         with:
@@ -56,9 +61,11 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # ✅ إنشاء مجلد الإخراج (Inno Setup لا ينشئه تلقائياً دائماً)
       - name: Prepare installer output dir
         run: mkdir build\installer -Force
 
+      # ✅ إنشاء الـ installer (تأكد من اسم ملف .iss الصحيح)
       - name: Create Installer (Single EXE)
         run: iscc installer.iss
 
