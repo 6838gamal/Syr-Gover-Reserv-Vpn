@@ -1,6 +1,6 @@
-#define MyAppName "Defyx VPN"
+#define MyAppName "SyrGoverIpReserv VPN"
 #define MyAppPublisher "UnboundTech UG"
-#define MyAppExeName "DefyxVPN.exe"
+#define MyAppExeName "SyrGoverIpReservVPN.exe"
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
