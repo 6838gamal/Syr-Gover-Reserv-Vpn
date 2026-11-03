@@ -1,11 +1,11 @@
 ; ============================================
-;  Inno Setup Script - Flutter Windows App
+;  Inno Setup Script - Syr Gover Reserv VPN
 ; ============================================
 
-#define AppName "MyFlutterApp"
+#define AppName "Syr Gover Reserv VPN"
 #define AppVersion "1.0.0"
 #define AppPublisher "MyCompany"
-#define AppExeName "my_flutter_app.exe"
+#define AppExeName "SyrGoverReservVpn.exe"   ; ← طابق BINARY_NAME
 #define BuildDir "build\windows\x64\runner\Release"
 
 [Setup]
@@ -23,6 +23,17 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
+; --- تحسينات ---
+SetupIconFile=windows\runner\resources\app_icon.ico
+UninstallDisplayIcon={app}\{#AppExeName}
+CloseApplications=yes
+RestartApplications=no
+AppMutex={#AppName}Mutex
+
+; --- صلاحيات: اختر واحدة ---
+; PrivilegesRequired=admin      ; إذا VPN يحتاج تعديل شبكة
+PrivilegesRequired=lowest       ; إذا يعتمد على HKCU فقط (launch_at_startup)
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -30,7 +41,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; كل ملفات مجلد Release
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
