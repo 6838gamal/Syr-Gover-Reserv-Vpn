@@ -1,0 +1,98 @@
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <string>
+#include <windows.h>
+
+class DXCoreBridge {
+ public:
+  DXCoreBridge();
+  ~DXCoreBridge();
+
+  bool Load();
+  void Unload();
+
+  // Register progress callback; will be called from DXcore threads.
+  void SetProgressCallback(std::function<void(const std::string&)> cb);
+
+  // Wrapper APIs
+  int Stop();
+  int MeasurePing();
+  std::string GetFlag();
+  void StartVPN(const std::string& cache_dir, const std::string& flow_line,
+                const std::string& pattern, const bool deepScan, const bool health_check);
+  int StopVPN();
+  int StartTunnel();
+  void StopTunnel();
+  void SetAsnName();
+  int SetTimeZone(float tz);
+  std::string GetFlowLine(bool is_test, const std::string& token);
+  std::string GetCachedFlowLine();
+  std::string DecodeAndVerifyFlowline(const std::string& flow_line);
+  void SetCacheDir(const std::string& cache_dir);
+  void SetConnectionMethod(const std::string& method);
+  int SetSystemProxy();
+  int ResetSystemProxy();
+  std::string Login(const std::string& email, const std::string& password);
+  std::string LoginByCode(const std::string& code);
+
+  // Gateway handshake — verifies the loaded DXcore.dll is authentic.
+  // Returns true only when the full HMAC challenge-response succeeds.
+  bool PerformGatewayHandshake();
+
+  bool IsLoaded() const { return lib_ != nullptr; }
+
+ private:
+  HMODULE lib_ = nullptr;
+
+  using progress_cb_t = void (*)(const char*);
+  using WinSetProgressListener_t = void (*)(progress_cb_t);
+  using WinStop_t = int (*)();
+  using WinMeasurePing_t = int (*)();
+  using WinGetFlag_t = const char* (*)();
+  using WinStartVPN_t = void (*)(const char*, const char*, const char*, int, int);
+  using WinStopVPN_t = int (*)();
+  using WinStartTunnel_t = int (*)();
+  using WinStopTunnel_t = void (*)();
+  using WinSetAsnName_t = void (*)();
+  using WinSetTimeZone_t = int (*)(float);
+  using WinGetFlowLine_t = const char* (*)(int, const char*);
+  using WinGetCachedFlowLine_t = const char* (*)();
+  using WinDecodeAndVerifyFlowline_t = const char* (*)(const char*);
+  using WinSetCacheDir_t = void (*)(const char*);
+  // using WinSetConnectionMethod_t = void (*)(const char*);
+  using WinFreeString_t = void (*)(char*);
+  using WinSetSystemProxy_t = int (*)();
+  using WinResetSystemProxy_t = int (*)();
+  using WinRequestHandshake_t = char* (*)(char*, char*);
+  using WinCompleteHandshake_t = char* (*)(char*);
+  using WinLogin_t = const char* (*)(const char*, const char*);
+  using WinLoginByCode_t = const char* (*)(const char*);
+
+  WinSetProgressListener_t pSetProgress_ = nullptr;
+  WinStop_t pStop_ = nullptr;
+  WinMeasurePing_t pMeasurePing_ = nullptr;
+  WinGetFlag_t pGetFlag_ = nullptr;
+  WinStartVPN_t pStartVPN_ = nullptr;
+  WinStopVPN_t pStopVPN_ = nullptr;
+  WinStartTunnel_t pStartTunnel_ = nullptr;
+  WinStopTunnel_t pStopTunnel_ = nullptr;
+  WinSetAsnName_t pSetAsnName_ = nullptr;
+  WinSetTimeZone_t pSetTimeZone_ = nullptr;
+  WinGetFlowLine_t pGetFlowLine_ = nullptr;
+  WinGetCachedFlowLine_t pGetCachedFlowLine_ = nullptr;
+  WinDecodeAndVerifyFlowline_t pDecodeAndVerifyFlowline_ = nullptr;
+  WinSetCacheDir_t pSetCacheDir_ = nullptr;
+  // WinSetConnectionMethod_t pSetConnectionMethod_ = nullptr;
+  WinFreeString_t pFreeString_ = nullptr;
+  WinSetSystemProxy_t pSetSystemProxy_ = nullptr;
+  WinResetSystemProxy_t pResetSystemProxy_ = nullptr;
+  WinRequestHandshake_t pRequestHandshake_ = nullptr;
+  WinCompleteHandshake_t pCompleteHandshake_ = nullptr;
+  WinLogin_t pLogin_ = nullptr;
+  WinLoginByCode_t pLoginByCode_ = nullptr;
+  static void __stdcall ProgressTrampoline(const char* msg);
+  static DXCoreBridge* s_instance_;
+  std::function<void(const std::string&)> progress_cb_;
+};
