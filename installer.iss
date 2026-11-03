@@ -2,7 +2,7 @@
 ;  Inno Setup Script - DefyxVPN
 ; ============================================
 
-#define AppName "DefyxVPN"
+#define AppName "SyrGoverIpReservVPN"
 #define AppVersion "1.0.0"
 #define AppPublisher "MyCompany"
 #define AppExeName "SyrGoverIpReservVPN.exe"
