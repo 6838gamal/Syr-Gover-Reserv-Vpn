@@ -6,13 +6,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
     # تحميل المشروع
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # إعداد Java
+    # إعداد Java 17
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
@@ -23,18 +23,22 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
-    # تثبيت Android SDK 34 (ليس 36 لأن Flutter قد لا يدعمه بعد)
+    # تثبيت Android SDK 34 (متوافق مع Flutter 3.24.5)
     - name: Install Android SDK
       run: |
-        sdkmanager "platforms;android-36"
-        sdkmanager "build-tools;36.0.0"
+        sdkmanager "platforms;android-34"
+        sdkmanager "build-tools;34.0.0"
         sdkmanager "platform-tools"
 
-    # إعداد Flutter - تحديد إصدار مستقر
+    # قبول جميع تراخيص Android SDK تلقائياً (حل مشكلة فشل البناء)
+    - name: Accept Android Licenses
+      run: yes | sdkmanager --licenses || true
+
+    # إعداد Flutter - إصدار مستقر
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.24.5'  # إصدار مستقر ومتوافق
+        flutter-version: '3.24.5'
         channel: stable
         cache: true
 
@@ -50,15 +54,13 @@ jobs:
     - name: Install Dependencies
       run: flutter pub get
 
-    # بناء APK خفيف ARM64 فقط
+    # بناء APK خفيف ARM64 فقط (بدون obfuscate لضمان نجاح البناء أولاً)
     - name: Build Lightweight APK
       run: |
         flutter build apk \
           --release \
           --target-platform=android-arm64 \
-          --tree-shake-icons \
-          --obfuscate \
-          --split-debug-info=build/debug-info
+          --tree-shake-icons
 
     # رفع APK
     - name: Upload APK
@@ -66,10 +68,3 @@ jobs:
       with:
         name: lightweight-release-apk
         path: build/app/outputs/flutter-apk/*.apk
-
-    # رفع ملفات الرموز
-    - name: Upload Debug Symbols
-      uses: actions/upload-artifact@v4
-      with:
-        name: debug-symbols
-        path: build/debug-info
