@@ -1,18 +1,15 @@
-package gamalsolutions.syria.syrgovervpn
+package com.example.myvpn
 
 import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
-import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
-import com.wireguard.config.*
+import com.wireguard.config.Config
 import kotlinx.coroutines.*
-import java.net.InetSocketAddress
 
 class MyVpnService : VpnService() {
 
@@ -32,6 +29,8 @@ class MyVpnService : VpnService() {
                     when (v) {
                         is String -> putExtra(k, v)
                         is Int -> putExtra(k, v)
+                        is Long -> putExtra(k, v)
+                        is Boolean -> putExtra(k, v)
                     }
                 }
             }
@@ -50,7 +49,7 @@ class MyVpnService : VpnService() {
             instance?.let {
                 it.backend?.let { b ->
                     try {
-                        b.getState(it.tunnel)
+                        b.getState(it.tunnel ?: return)
                     } catch (_: Throwable) {}
                 }
             }
@@ -59,7 +58,6 @@ class MyVpnService : VpnService() {
 
     private var tunnel: WgTunnel? = null
     private var backend: GoBackend? = null
-    private var lastArgs: Map<String, Any>? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -68,10 +66,9 @@ class MyVpnService : VpnService() {
                 startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
                 val args = mutableMapOf<String, Any>()
                 intent.extras?.keySet()?.forEach { k ->
-                    intent.extras?.get(k)?.let { args[k] = it }
+                    intent.extras?.get(k)?.let { v -> args[k] = v }
                 }
-                lastArgs = args
-                connect(args)
+                if (args.isNotEmpty()) connect(args)
             }
             ACTION_DISCONNECT -> {
                 scope.launch {
@@ -105,6 +102,10 @@ class MyVpnService : VpnService() {
                     return@launch
                 }
 
+                // ⭐ احفظ الإعدادات للاستخدام عند إعادة الإقلاع
+                ConfigPersistence.saveLastConfig(this@MyVpnService, args)
+                ConfigPersistence.setAutostart(this@MyVpnService, true)
+
                 val cfg = buildConfig(args)
                 backend = GoBackend(this@MyVpnService)
                 val t = WgTunnel()
@@ -114,26 +115,25 @@ class MyVpnService : VpnService() {
                 updateNotification("متصل")
             } catch (e: Throwable) {
                 VpnStateBus.set("error", e.message ?: e.toString())
-                updateNotification("خطأ")
+                updateNotification("خطأ: ${e.message}")
             }
         }
     }
 
     private fun buildConfig(args: Map<String, Any>): Config {
-        val iface = Interface.Builder()
+        val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(args["privateKey"] as String)
             .parseAddresses((args["address"] as String).split(","))
             .parseDnsServers((args["dns"] as String).split(","))
             .build()
 
-        val peer = Peer.Builder()
+        val peer = com.wireguard.config.Peer.Builder()
             .parsePublicKey(args["peerPublicKey"] as String)
             .parseEndpoint(args["endpoint"] as String)
             .parseAllowedIPs((args["allowedIps"] as String).split(","))
             .parsePersistentKeepalive((args["persistentKeepalive"] as Int).toString())
             .build()
 
-        // MTU يُضبط عبر Config.Builder
         return Config.Builder().setInterface(iface).addPeer(peer).build()
     }
 
