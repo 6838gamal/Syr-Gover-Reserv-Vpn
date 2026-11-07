@@ -69,6 +69,32 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Future<void> onNetworkChanged() => _channel.invokeMethod('kick');
 
+  // ---------- دوال Android-specific ----------
+
+  /// هل auto-start مفعّل؟
+  Future<bool> isAutostartEnabled() async {
+    final v = await _channel.invokeMethod<bool>('getAutostart');
+    return v ?? false;
+  }
+
+  /// فعّل/عطّل auto-start
+  Future<void> setAutostart(bool enabled) async {
+    await _channel.invokeMethod('setAutostart', {'enabled': enabled});
+  }
+
+  /// افتح إعدادات Always-on VPN في النظام
+  Future<bool> openAlwaysOnSettings() async {
+    final v = await _channel.invokeMethod<bool>('openAlwaysOnSettings');
+    return v ?? false;
+  }
+
+  /// اطلب إعفاء من تحسين البطارية (ضروري على Xiaomi/Huawei/Samsung)
+  Future<bool> requestBatteryOptimizationExemption() async {
+    final v = await _channel
+        .invokeMethod<bool>('openBatteryOptimizationSettings');
+    return v ?? false;
+  }
+
   @override
   Stream<VpnState> get stateStream => _controller.stream;
 
