@@ -1,4 +1,4 @@
-package gamalsolutions.syria.syrgovervpn
+package com.example.myvpn
 
 import io.flutter.plugin.common.EventChannel
 
