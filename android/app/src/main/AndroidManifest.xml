@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -28,7 +29,7 @@
             </intent-filter>
         </activity>
 
-        <!-- خدمة VPN -->
+        <!-- خدمة VPN — SUPPORTS_ALWAYS_ON ضروري -->
         <service
             android:name=".MyVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
@@ -42,13 +43,16 @@
                 android:value="true" />
         </service>
 
-        <!-- استقبال إعادة التشغيل -->
+        <!-- استقبال إعادة الإقلاع -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
             </intent-filter>
         </receiver>
 
