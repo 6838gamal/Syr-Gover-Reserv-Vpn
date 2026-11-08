@@ -8,33 +8,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # تحميل المشروع
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # إعداد Java 17
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
         distribution: temurin
         java-version: 17
 
-    # إعداد Android SDK
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
-    # تثبيت Android SDK 34 (متوافق مع Flutter 3.24.5)
+    # ✅ قبول التراخيص أولاً قبل أي تثبيت — باستخدام printf لضمان الموثوقية
+    - name: Accept Android Licenses
+      run: |
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+    # ✅ تثبيت SDK 34
     - name: Install Android SDK
       run: |
         sdkmanager "platforms;android-34"
         sdkmanager "build-tools;34.0.0"
         sdkmanager "platform-tools"
 
-    # قبول جميع تراخيص Android SDK تلقائياً (حل مشكلة فشل البناء)
-    - name: Accept Android Licenses
-      run: yes | sdkmanager --licenses || true
+    # ✅ التحقق من قبول التراخيص (للتشخيص)
+    - name: Verify Licenses
+      run: sdkmanager --licenses < /dev/null | tail -5 || true
 
-    # إعداد Flutter - إصدار مستقر
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
@@ -42,19 +44,15 @@ jobs:
         channel: stable
         cache: true
 
-    # التحقق من إصدار Flutter
     - name: Check Flutter Version
       run: flutter --version
 
-    # تنظيف المشروع
     - name: Flutter Clean
       run: flutter clean
 
-    # تثبيت الحزم
     - name: Install Dependencies
       run: flutter pub get
 
-    # بناء APK خفيف ARM64 فقط (بدون obfuscate لضمان نجاح البناء أولاً)
     - name: Build Lightweight APK
       run: |
         flutter build apk \
@@ -62,7 +60,6 @@ jobs:
           --target-platform=android-arm64 \
           --tree-shake-icons
 
-    # رفع APK
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
