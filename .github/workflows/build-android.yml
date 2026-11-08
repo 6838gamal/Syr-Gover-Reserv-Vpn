@@ -7,61 +7,94 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      # 1) تحميل المشروع
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: temurin
-        java-version: 17
+      # 2) إعداد Java 17
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+      # 3) تشخيص موقع SDK (للتحقق فقط — لا يفشل البناء)
+      - name: Debug - Locate Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la /usr/local/lib/android/sdk || true
+          ls -la /usr/local/lib/android/sdk/cmdline-tools || true
+          ls -la /usr/local/lib/android/sdk/cmdline-tools/latest/bin || true
 
-    # ✅ قبول التراخيص أولاً قبل أي تثبيت — باستخدام printf لضمان الموثوقية
-    - name: Accept Android Licenses
-      run: |
-        yes | sdkmanager --licenses > /dev/null 2>&1 || true
-        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+      # 4) ضبط PATH لأدوات Android SDK
+      - name: Configure Android SDK PATH
+        run: |
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/build-tools/34.0.0" >> $GITHUB_PATH
 
-    # ✅ تثبيت SDK 34
-    - name: Install Android SDK
-      run: |
-        sdkmanager "platforms;android-34"
-        sdkmanager "build-tools;34.0.0"
-        sdkmanager "platform-tools"
+      # 5) قبول جميع تراخيص Android SDK (يحل مشكلة Accept? (y/N))
+      - name: Accept All Android Licenses
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
 
-    # ✅ التحقق من قبول التراخيص (للتشخيص)
-    - name: Verify Licenses
-      run: sdkmanager --licenses < /dev/null | tail -5 || true
+      # 6) تثبيت Android SDK 34 (متوافق مع Flutter 3.24.5)
+      - name: Install Android SDK 34
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools" > /dev/null
 
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.24.5'
-        channel: stable
-        cache: true
+      # 7) التحقق من قبول التراخيص (تشخيصي)
+      - name: Verify Licenses
+        run: |
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses < /dev/null | tail -20 || true
 
-    - name: Check Flutter Version
-      run: flutter --version
+      # 8) إعداد Flutter (إصدار مستقر)
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
 
-    - name: Flutter Clean
-      run: flutter clean
+      # 9) التحقق من إصدار Flutter
+      - name: Check Flutter Version
+        run: flutter --version
 
-    - name: Install Dependencies
-      run: flutter pub get
+      # 10) إعداد Flutter لاستخدام Android SDK
+      - name: Configure Flutter Android SDK
+        run: |
+          flutter config --android-sdk "$ANDROID_SDK_ROOT"
+          flutter doctor -v || true
 
-    - name: Build Lightweight APK
-      run: |
-        flutter build apk \
-          --release \
-          --target-platform=android-arm64 \
-          --tree-shake-icons
+      # 11) تنظيف المشروع
+      - name: Flutter Clean
+        run: flutter clean
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: lightweight-release-apk
-        path: build/app/outputs/flutter-apk/*.apk
+      # 12) تثبيت الحزم
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # 13) بناء APK خفيف ARM64 فقط
+      - name: Build Lightweight APK
+        run: |
+          flutter build apk \
+            --release \
+            --target-platform=android-arm64 \
+            --tree-shake-icons
+
+      # 14) رفع APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightweight-release-apk
+          path: build/app/outputs/flutter-apk/*.apk
