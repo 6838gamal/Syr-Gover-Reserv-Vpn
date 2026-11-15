@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.myvpn"
+    namespace = "gamalsolutions.syria.syrgovervpn"
     compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
@@ -19,7 +19,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.myvpn"
+        applicationId = "gamalsolutions.syria.syrgovervpn"
         minSdk = 21
         targetSdk = 35
         versionCode = flutter.versionCode
