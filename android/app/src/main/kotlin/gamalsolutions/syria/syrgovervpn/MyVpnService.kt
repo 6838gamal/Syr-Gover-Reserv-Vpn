@@ -130,15 +130,17 @@ class MyVpnService : VpnService() {
     private fun buildConfig(args: Map<String, Any>): Config {
         val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(args["privateKey"] as String)
-            .parseAddresses((args["address"] as String).split(","))
-            .parseDnsServers((args["dns"] as String).split(","))
+            .parseAddresses(args["address"] as String)
+            .parseDnsServers(args["dns"] as String)
             .build()
 
         val peer = com.wireguard.config.Peer.Builder()
             .parsePublicKey(args["peerPublicKey"] as String)
             .parseEndpoint(args["endpoint"] as String)
-            .parseAllowedIPs((args["allowedIps"] as String).split(","))
-            .parsePersistentKeepalive(args["persistentKeepalive"] as Int)
+            .parseAllowedIPs(args["allowedIps"] as String)
+            .parsePersistentKeepalive(
+                (args["persistentKeepalive"] as Int).toString()
+            )
             .build()
 
         return Config.Builder().setInterface(iface).addPeer(peer).build()
