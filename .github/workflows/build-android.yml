@@ -233,7 +233,6 @@ jobs:
           if [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
             echo "⚠️ gradle-wrapper.jar missing — attempting to restore from Flutter SDK"
             mkdir -p android/gradle/wrapper
-            # جرّب نسخه من قالب Flutter
             TEMPLATE="$FLUTTER_ROOT/packages/flutter_tools/templates/app/android.tmpl/gradle/wrapper"
             if [ -f "$TEMPLATE/gradle-wrapper.jar" ]; then
               cp "$TEMPLATE/gradle-wrapper.jar" android/gradle/wrapper/
@@ -281,16 +280,32 @@ jobs:
           flutter build apk \
             --release \
             --target-platform=android-arm64 \
-            --tree-shake-icons \
-            --verbose 2>&1 | tail -100
+            --tree-shake-icons
 
-      # 18) رفع APK
+      # 17.1) 🔍 البحث عن APK بعد البناء
+      - name: 🔍 Locate APK after build
+        if: always()
+        run: |
+          echo "========== APK FILES =========="
+          find build -name "*.apk" 2>/dev/null || echo "❌ No APK found!"
+          echo ""
+          echo "========== outputs tree =========="
+          ls -laR build/app/outputs/ 2>/dev/null | head -80 || echo "outputs missing"
+          echo ""
+          echo "========== APK sizes =========="
+          find build -name "*.apk" -exec ls -lh {} \; 2>/dev/null || true
+
+      # 18) رفع APK (بدون شرط success)
       - name: Upload APK
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lightweight-release-apk
-          path: build/app/outputs/flutter-apk/*.apk
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/apk/**/*.apk
+          if-no-files-found: warn
+          retention-days: 30
 
       # 19) رفع لوج البناء حتى عند الفشل
       - name: Upload build logs
