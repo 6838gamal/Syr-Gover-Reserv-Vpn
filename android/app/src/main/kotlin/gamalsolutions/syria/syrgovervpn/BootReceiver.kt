@@ -1,4 +1,4 @@
-package com.example.myvpn
+package gamalsolutions.syria.syrgovervpn
 
 import android.content.BroadcastReceiver
 import android.content.Context
