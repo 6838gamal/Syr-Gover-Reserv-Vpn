@@ -30,8 +30,8 @@ android {
         release {
             // استخدم توقيع debug مؤقتاً — عدّله للإنتاج
             signingConfig = signingConfigs.debug
-            isMinifyEnabled = true
-            isShrinkResources = true
+            minifyEnabled true
+            shrinkResources true
         }
     }
 }
