@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -122,6 +123,3 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
-
-// kIsWeb يأتي من flutter/foundation
-// (تم استيراده تلقائياً عبر material)
