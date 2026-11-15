@@ -146,19 +146,63 @@ jobs:
           EOF
           fi
 
-      # 🧪 تنزيل Gradle Wrapper 8.3 (بدون تشغيل gradle)
+      # 🎨 موارد Android الأساسية
+      - name: 🎨 Ensure Android resources exist
+        run: |
+          mkdir -p android/app/src/main/res/values
+          mkdir -p android/app/src/main/res/drawable
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+
+          if [ ! -f android/app/src/main/res/values/styles.xml ]; then
+            cat > android/app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+                  <item name="android:windowBackground">@drawable/launch_background</item>
+              </style>
+              <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+                  <item name="android:windowBackground">?android:colorBackground</item>
+              </style>
+          </resources>
+          EOF
+          fi
+
+          if [ ! -f android/app/src/main/res/drawable/launch_background.xml ]; then
+            cat > android/app/src/main/res/drawable/launch_background.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item android:drawable="@android:color/white" />
+          </layer-list>
+          EOF
+          fi
+
+          FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
+          DEFAULT_ICON="$FLUTTER_ROOT/packages/flutter_tools/templates/app_shared/android.tmpl/res/mipmap-hdpi/ic_launcher.png"
+          if [ ! -f android/app/src/main/res/mipmap-hdpi/ic_launcher.png ]; then
+            if [ -f "$DEFAULT_ICON" ]; then
+              cp "$DEFAULT_ICON" android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+            else
+              echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" | base64 -d > android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+            fi
+          fi
+
+          for density in mdpi xhdpi xxhdpi xxxhdpi; do
+            if [ ! -f android/app/src/main/res/mipmap-$density/ic_launcher.png ]; then
+              cp android/app/src/main/res/mipmap-hdpi/ic_launcher.png \
+                 android/app/src/main/res/mipmap-$density/ic_launcher.png 2>/dev/null || true
+            fi
+          done
+
+      # 🧪 تنزيل Gradle Wrapper 8.3
       - name: 🧪 Download Gradle Wrapper 8.3
         run: |
           cd android
-
-          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "✅ Wrapper already exists"
-          else
-            echo "⚠️ Wrapper missing — downloading Gradle 8.3 wrapper..."
-
+          if [ ! -f gradlew ] || [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             mkdir -p gradle/wrapper
-
-            # تأكد أن properties يشير إلى 8.3
             cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
@@ -166,30 +210,74 @@ jobs:
           zipStorePath=wrapper/dists
           distributionUrl=https\://services.gradle.org/distributions/gradle-8.3-all.zip
           EOF
-
             curl -fsSL -o gradle/wrapper/gradle-wrapper.jar \
               "https://raw.githubusercontent.com/gradle/gradle/v8.3.0/gradle/wrapper/gradle-wrapper.jar" || \
             curl -fsSL -o gradle/wrapper/gradle-wrapper.jar \
               "https://github.com/gradle/gradle/raw/v8.3.0/gradle/wrapper/gradle-wrapper.jar"
-
             curl -fsSL -o gradlew \
               "https://raw.githubusercontent.com/gradle/gradle/v8.3.0/gradlew" || \
             curl -fsSL -o gradlew \
               "https://github.com/gradle/gradle/raw/v8.3.0/gradlew"
-
             chmod +x gradlew
-            echo "✅ Wrapper 8.3 downloaded"
           fi
-
           chmod +x gradlew || true
           cd ..
+          ls -la android/gradlew
 
-          echo "========== WRAPPER CHECK =========="
-          ls -la android/gradlew 2>/dev/null || echo "❌ gradlew missing"
-          ls -la android/gradle/wrapper/ 2>/dev/null || echo "❌ wrapper missing"
-          file android/gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
-          echo "========== wrapper properties =========="
-          cat android/gradle/wrapper/gradle-wrapper.properties 2>/dev/null || true
+      # 🔥 تحسينات الحجم على build.gradle
+      - name: 🔥 Apply size optimizations to build.gradle
+        run: |
+          python3 - <<'PY'
+          import re
+          path = "android/app/build.gradle"
+          with open(path, "r") as f:
+              content = f.read()
+
+          # 1) تفعيل minify + shrinkResources داخل release
+          if "minifyEnabled" not in content:
+              content = content.replace(
+                  "signingConfig = signingConfigs.debug",
+                  "signingConfig = signingConfigs.debug\n            minifyEnabled true\n            shrinkResources true\n            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"proguard-rules.pro\")"
+              )
+
+          # 2) abiFilters داخل defaultConfig
+          if "abiFilters" not in content and "ndk {" not in content:
+              content = re.sub(
+                  r"(defaultConfig\s*\{[^}]*?)(\n\s*\})",
+                  r"\1\n        ndk { abiFilters 'arm64-v8a' }\2",
+                  content,
+                  count=1,
+                  flags=re.DOTALL
+              )
+
+          with open(path, "w") as f:
+              f.write(content)
+
+          print("=== build.gradle after edits ===")
+          print(content)
+          PY
+
+          # 3) إنشاء proguard-rules.pro إذا لم يكن موجوداً
+          if [ ! -f android/app/proguard-rules.pro ]; then
+            cat > android/app/proguard-rules.pro <<'EOF'
+          -keep class com.wireguard.** { *; }
+          -keepclassmembers class com.wireguard.** { *; }
+          -dontwarn com.wireguard.**
+          -keepclassmembers class kotlinx.coroutines.** { *; }
+          -keep class kotlinx.coroutines.** { *; }
+          -dontwarn kotlinx.coroutines.**
+          -keep class io.flutter.** { *; }
+          -keep class io.flutter.plugins.** { *; }
+          -keep class io.flutter.embedding.** { *; }
+          -dontwarn io.flutter.**
+          -dontwarn org.jetbrains.**
+          -dontwarn javax.annotation.**
+          -dontwarn kotlin.**
+          -keepclasseswithmembernames class * {
+              native <methods>;
+          }
+          EOF
+          fi
 
       - name: Flutter Clean
         run: flutter clean
@@ -197,20 +285,30 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      # 🏗️ بناء APK
-      - name: Build Lightweight APK
+      # 🏗️ بناء APK مصغّر (ARM64 فقط)
+      - name: Build Lightweight APK (ARM64)
         run: |
           flutter build apk \
             --release \
             --target-platform=android-arm64 \
             --tree-shake-icons
 
-      - name: 🔍 Locate APK
+      # 🏗️ بناء AAB (للنشر على Google Play)
+      - name: Build AAB (ARM64)
+        continue-on-error: true
+        run: |
+          flutter build appbundle \
+            --release \
+            --target-platform=android-arm64 \
+            --tree-shake-icons
+
+      - name: 🔍 Locate outputs
         if: always()
         run: |
-          echo "========== APK FILES =========="
-          find build -name "*.apk" 2>/dev/null || echo "❌ No APK"
-          find build -name "*.apk" -exec ls -lh {} \; 2>/dev/null || true
+          echo "========== APK =========="
+          find build -name "*.apk" -exec ls -lh {} \; 2>/dev/null || echo "no APK"
+          echo "========== AAB =========="
+          find build -name "*.aab" -exec ls -lh {} \; 2>/dev/null || echo "no AAB"
 
       - name: Upload APK
         if: always()
@@ -220,6 +318,15 @@ jobs:
           path: |
             build/app/outputs/flutter-apk/*.apk
             build/app/outputs/apk/**/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload AAB
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: build/app/outputs/bundle/**/*.aab
           if-no-files-found: warn
           retention-days: 30
 
