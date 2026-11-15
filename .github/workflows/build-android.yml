@@ -14,7 +14,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # تصدير نسخة الموبايل
       - name: Prepare Mobile pubspec
         run: |
           mkdir -p output/mobile
@@ -28,14 +27,19 @@ jobs:
           path: output/mobile/pubspec.yaml
           retention-days: 30
 
-      # تصدير نسخة المكتبي
       - name: Prepare Desktop pubspec
         run: |
           mkdir -p output/desktop
-          cp pubspec_desktop.yaml output/desktop/pubspec.yaml
-          echo "✅ Desktop pubspec ready"
+          if [ -f pubspec_desktop.yaml ]; then
+            cp pubspec_desktop.yaml output/desktop/pubspec.yaml
+            echo "✅ Desktop pubspec ready"
+          else
+            echo "::warning::pubspec_desktop.yaml not found — skipping"
+            echo "DESKTOP_MISSING=true" >> $GITHUB_ENV
+          fi
 
       - name: Upload Desktop pubspec
+        if: env.DESKTOP_MISSING != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pubspec-desktop
@@ -78,7 +82,6 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           ls -la /usr/local/lib/android/sdk || true
-          ls -la /usr/local/lib/android/sdk/cmdline-tools || true
           ls -la /usr/local/lib/android/sdk/cmdline-tools/latest/bin || true
 
       # 5) ضبط PATH
@@ -92,7 +95,6 @@ jobs:
       - name: Accept All Android Licenses
         run: |
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
 
       # 7) تثبيت Android SDK 34
       - name: Install Android SDK 34
@@ -102,12 +104,7 @@ jobs:
             "build-tools;34.0.0" \
             "platform-tools" > /dev/null
 
-      # 8) التحقق من التراخيص
-      - name: Verify Licenses
-        run: |
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses < /dev/null | tail -20 || true
-
-      # 9) إعداد Flutter
+      # 8) إعداد Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -115,35 +112,193 @@ jobs:
           channel: stable
           cache: true
 
-      # 10) التحقق من إصدار Flutter
+      # 9) التحقق من إصدار Flutter
       - name: Check Flutter Version
         run: flutter --version
 
-      # 11) ربط Flutter بـ Android SDK
+      # 10) ربط Flutter بـ Android SDK
       - name: Configure Flutter Android SDK
         run: |
           flutter config --android-sdk "$ANDROID_SDK_ROOT"
           flutter doctor -v || true
 
-      # 12) تنظيف المشروع
+      # 11) 🔍 تشخيص كامل لحالة android/
+      - name: 🔍 Full Android Diagnosis (BEFORE)
+        run: |
+          echo "========== ANDROID TREE =========="
+          find android -maxdepth 4 -type f 2>/dev/null | sort || echo "android/ NOT FOUND"
+          echo ""
+          echo "========== local.properties =========="
+          cat android/local.properties 2>/dev/null || echo "❌ MISSING"
+          echo ""
+          echo "========== settings.gradle =========="
+          cat android/settings.gradle 2>/dev/null || echo "❌ MISSING"
+          echo ""
+          echo "========== build.gradle (root) =========="
+          cat android/build.gradle 2>/dev/null || echo "❌ MISSING"
+          echo ""
+          echo "========== gradle.properties =========="
+          cat android/gradle.properties 2>/dev/null || echo "❌ MISSING"
+          echo ""
+          echo "========== gradle-wrapper.properties =========="
+          cat android/gradle/wrapper/gradle-wrapper.properties 2>/dev/null || echo "❌ MISSING"
+
+      # 12) 🛠️ إنشاء الملفات الناقصة في android/
+      - name: 🛠️ Ensure required Gradle files exist
+        run: |
+          FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
+          echo "Flutter root: $FLUTTER_ROOT"
+
+          # 12.1) local.properties (إلزامي)
+          cat > android/local.properties <<EOF
+          sdk.dir=$ANDROID_SDK_ROOT
+          flutter.sdk=$FLUTTER_ROOT
+          EOF
+          echo "✅ local.properties"
+
+          # 12.2) gradle.properties
+          if [ ! -f android/gradle.properties ]; then
+            cat > android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4G -XX:MaxMetaspaceSize=2G -XX:+HeapDumpOnOutOfMemoryError
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
+            echo "✅ gradle.properties created"
+          else
+            grep -q "android.useAndroidX" android/gradle.properties || echo "android.useAndroidX=true" >> android/gradle.properties
+            grep -q "android.enableJetifier" android/gradle.properties || echo "android.enableJetifier=true" >> android/gradle.properties
+            echo "✅ gradle.properties updated"
+          fi
+
+          # 12.3) settings.gradle
+          if [ ! -f android/settings.gradle ] && [ ! -f android/settings.gradle.kts ]; then
+            cat > android/settings.gradle <<'EOF'
+          pluginManagement {
+              def flutterSdkPath = {
+                  def properties = new Properties()
+                  file("local.properties").withInputStream { properties.load(it) }
+                  def flutterSdkPath = properties.getProperty("flutter.sdk")
+                  assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+                  return flutterSdkPath
+              }()
+
+              includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          plugins {
+              id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+              id "com.android.application" version "8.1.0" apply false
+              id "org.jetbrains.kotlin.android" version "1.9.0" apply false
+          }
+
+          include ":app"
+          EOF
+            echo "✅ settings.gradle created"
+          fi
+
+          # 12.4) build.gradle (root)
+          if [ ! -f android/build.gradle ]; then
+            cat > android/build.gradle <<'EOF'
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.buildDir = "../build"
+          subprojects {
+              project.buildDir = "${rootProject.buildDir}/${project.name}"
+          }
+          subprojects {
+              project.evaluationDependsOn(":app")
+          }
+
+          tasks.register("clean", Delete) {
+              delete rootProject.buildDir
+          }
+          EOF
+            echo "✅ android/build.gradle created"
+          fi
+
+      # 13) 🧪 التحقق من gradle wrapper
+      - name: 🧪 Verify Gradle Wrapper
+        run: |
+          if [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "⚠️ gradle-wrapper.jar missing — attempting to restore from Flutter SDK"
+            mkdir -p android/gradle/wrapper
+            # جرّب نسخه من قالب Flutter
+            TEMPLATE="$FLUTTER_ROOT/packages/flutter_tools/templates/app/android.tmpl/gradle/wrapper"
+            if [ -f "$TEMPLATE/gradle-wrapper.jar" ]; then
+              cp "$TEMPLATE/gradle-wrapper.jar" android/gradle/wrapper/
+              cp "$TEMPLATE/gradle-wrapper.properties" android/gradle/wrapper/ 2>/dev/null || true
+              echo "✅ wrapper restored from template"
+            else
+              echo "::warning::gradle-wrapper.jar missing and no template found"
+            fi
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "⚠️ gradlew missing"
+            TEMPLATE="$FLUTTER_ROOT/packages/flutter_tools/templates/app/android.tmpl"
+            if [ -f "$TEMPLATE/gradlew" ]; then
+              cp "$TEMPLATE/gradlew" android/gradlew
+              chmod +x android/gradlew
+              echo "✅ gradlew restored"
+            fi
+          fi
+
+          echo "========== WRAPPER CHECK =========="
+          ls -la android/gradle/wrapper/ 2>/dev/null || echo "wrapper dir missing"
+          ls -la android/gradlew 2>/dev/null || echo "gradlew missing"
+
+      # 14) 🔍 التحقق AFTER
+      - name: 🔍 Full Android Diagnosis (AFTER)
+        run: |
+          echo "========== FILES NOW =========="
+          find android -maxdepth 3 -type f 2>/dev/null | sort
+          echo ""
+          echo "========== settings.gradle =========="
+          cat android/settings.gradle 2>/dev/null || echo "still missing"
+
+      # 15) تنظيف المشروع
       - name: Flutter Clean
         run: flutter clean
 
-      # 13) تثبيت الحزم
+      # 16) تثبيت الحزم
       - name: Install Dependencies
         run: flutter pub get
 
-      # 14) بناء APK خفيف ARM64
+      # 17) بناء APK خفيف ARM64
       - name: Build Lightweight APK
         run: |
           flutter build apk \
             --release \
             --target-platform=android-arm64 \
-            --tree-shake-icons
+            --tree-shake-icons \
+            --verbose 2>&1 | tail -100
 
-      # 15) رفع APK
+      # 18) رفع APK
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: lightweight-release-apk
           path: build/app/outputs/flutter-apk/*.apk
+
+      # 19) رفع لوج البناء حتى عند الفشل
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build/
+            android/.gradle/
+          retention-days: 7
