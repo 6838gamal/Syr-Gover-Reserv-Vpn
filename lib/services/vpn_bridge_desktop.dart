@@ -12,61 +12,88 @@ import 'vpn_bridge.dart';
 class VpnBridgeDesktop implements VpnBridge {
   final _controller = StreamController<VpnState>.broadcast();
   VpnState _state = const VpnState();
-  Process? _process;
   Timer? _watchdog;
   String? _confPath;
+  String? _tunnelName;
+  VpnConfig? _lastConfig;
 
   bool get _isWindows => Platform.isWindows;
+  bool get _isLinux => Platform.isLinux;
+  bool get _isMacOS => Platform.isMacOS;
+
+  @override
+  VpnState get currentState => _state;
+
+  @override
+  Stream<VpnState> get stateStream => _controller.stream;
+
+  // ------------------------------------------------------------------
+  // init
+  // ------------------------------------------------------------------
 
   @override
   Future<void> init() async {
-    _emit(const VpnState());
+    _emit(const VpnState(status: VpnStatus.disconnected));
   }
+
+  // ------------------------------------------------------------------
+  // requestPermission — تحقق من وجود الأدوات فقط
+  // ------------------------------------------------------------------
 
   @override
   Future<bool> requestPermission() async {
-    if (_isWindows) {
-      final r = await Process.run('where', ['wireguard.exe']);
+    try {
+      if (_isWindows) {
+        final r = await Process.run('where', ['wireguard.exe'])
+            .timeout(const Duration(seconds: 3));
+        return r.exitCode == 0;
+      }
+      // Linux / macOS
+      final r = await Process.run('which', ['wg-quick'])
+          .timeout(const Duration(seconds: 3));
       return r.exitCode == 0;
+    } catch (_) {
+      return false;
     }
-    final r = await Process.run('which', ['wg-quick']);
-    return r.exitCode == 0;
   }
+
+  @override
+  Future<bool> requestNotificationPermission() async => true;
+
+  // ------------------------------------------------------------------
+  // connect
+  // ------------------------------------------------------------------
 
   @override
   Future<void> connect(VpnConfig config) async {
     if (_state.status == VpnStatus.connected ||
-        _state.status == VpnStatus.connecting) return;
+        _state.status == VpnStatus.connecting) {
+      return;
+    }
 
+    _lastConfig = config;
+    _tunnelName = config.name;
     _emit(VpnState(
-        status: VpnStatus.connecting, activeConfigName: config.name));
+      status: VpnStatus.connecting,
+      activeConfigName: config.name,
+    ));
 
     try {
       final dir = await getApplicationSupportDirectory();
       _confPath = p.join(dir.path, '${config.name}.conf');
       await File(_confPath!).writeAsString(config.toConf());
 
+      int exitCode;
       if (_isWindows) {
-        _process = await Process.start(
-            'wireguard.exe', ['/installtunnelservice', _confPath!]);
+        exitCode = await _runWindowsConnect(_confPath!);
+      } else if (_isLinux) {
+        exitCode = await _runLinuxConnect(_confPath!, config.name);
       } else {
-        _process = await Process.start(
-            'sudo', ['wg-quick', 'up', _confPath!]);
+        // macOS
+        exitCode = await _runMacConnect(_confPath!, config.name);
       }
 
-      _process!.stdout.transform(utf8.decoder).listen((_) {});
-      _process!.stderr.transform(utf8.decoder).listen((err) {
-        if (err.trim().isNotEmpty) {
-          _emit(VpnState(
-            status: VpnStatus.error,
-            errorMessage: err.trim(),
-            activeConfigName: config.name,
-          ));
-        }
-      });
-
-      final code = await _process!.exitCode;
-      if (code == 0) {
+      if (exitCode == 0) {
         _emit(VpnState(
           status: VpnStatus.connected,
           activeConfigName: config.name,
@@ -76,14 +103,90 @@ class VpnBridgeDesktop implements VpnBridge {
       } else {
         _emit(VpnState(
           status: VpnStatus.error,
-          errorMessage: 'فشل التشغيل (exit $code)',
+          errorMessage: 'فشل الاتصال (exit $exitCode)',
           activeConfigName: config.name,
         ));
       }
     } catch (e) {
-      _emit(VpnState(status: VpnStatus.error, errorMessage: e.toString()));
+      _emit(VpnState(
+        status: VpnStatus.error,
+        errorMessage: e.toString(),
+        activeConfigName: config.name,
+      ));
     }
   }
+
+  // ------------------------- Windows -------------------------
+
+  Future<int> _runWindowsConnect(String confPath) async {
+    // wireguard.exe /installtunnelservice يعمل كـ Windows Service
+    // ويعود فوراً بعد التثبيت. نتحقق من حالة الخدمة بعدها.
+    final r = await Process.run(
+      'wireguard.exe',
+      ['/installtunnelservice', confPath],
+    ).timeout(const Duration(seconds: 15));
+    if (r.exitCode != 0) return r.exitCode;
+
+    // انتظر حتى تصبح الخدمة RUNNING
+    final name = p.basenameWithoutExtension(confPath);
+    for (var i = 0; i < 10; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (await _isTunnelAlive(name)) return 0;
+    }
+    return 1;
+  }
+
+  // ------------------------- Linux -------------------------
+
+  Future<int> _runLinuxConnect(String confPath, String name) async {
+    // 1) جرّب pkexec (غير تفاعلي إن وُجد)
+    // 2) وإلا استخدم sudo -n (non-interactive)
+    final runners = <List<String>>[
+      ['pkexec', 'wg-quick', 'up', confPath],
+      ['sudo', '-n', 'wg-quick', 'up', confPath],
+    ];
+
+    for (final args in runners) {
+      try {
+        final exe = args.removeAt(0);
+        final r = await Process.run(exe, args)
+            .timeout(const Duration(seconds: 20));
+        if (r.exitCode == 0) {
+          // تحقق إضافي من وجود الواجهة
+          for (var i = 0; i < 6; i++) {
+            await Future.delayed(const Duration(milliseconds: 500));
+            if (await _isTunnelAlive(name)) return 0;
+          }
+        }
+      } catch (_) {
+        // جرّب التالي
+      }
+    }
+    return 1;
+  }
+
+  // ------------------------- macOS -------------------------
+
+  Future<int> _runMacConnect(String confPath, String name) async {
+    // macOS: wg-quick موجود عبر brew install wireguard-tools
+    // يحتاج sudo أيضاً
+    try {
+      final r = await Process.run(
+        'sudo',
+        ['-n', 'wg-quick', 'up', confPath],
+      ).timeout(const Duration(seconds: 20));
+      if (r.exitCode != 0) return r.exitCode;
+      for (var i = 0; i < 6; i++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (await _isTunnelAlive(name)) return 0;
+      }
+    } catch (_) {}
+    return 1;
+  }
+
+  // ------------------------------------------------------------------
+  // watchdog
+  // ------------------------------------------------------------------
 
   void _startWatchdog(VpnConfig config) {
     _watchdog?.cancel();
@@ -92,8 +195,9 @@ class VpnBridgeDesktop implements VpnBridge {
       final alive = await _isTunnelAlive(config.name);
       if (!alive) {
         _emit(VpnState(
-            status: VpnStatus.connecting,
-            activeConfigName: config.name));
+          status: VpnStatus.connecting,
+          activeConfigName: config.name,
+        ));
         await _forceDown(config.name);
         await Future.delayed(const Duration(seconds: 2));
         await connect(config);
@@ -102,25 +206,51 @@ class VpnBridgeDesktop implements VpnBridge {
   }
 
   Future<bool> _isTunnelAlive(String name) async {
-    if (_isWindows) {
-      final r = await Process.run(
-          'sc', ['query', 'WireGuardTunnel\$$name']);
-      return r.stdout.toString().contains('RUNNING');
+    try {
+      if (_isWindows) {
+        final r = await Process.run(
+          'sc',
+          ['query', 'WireGuardTunnel\$$name'],
+        ).timeout(const Duration(seconds: 3));
+        return r.stdout.toString().contains('RUNNING');
+      }
+      // Linux / macOS
+      final r = await Process.run('ip', ['link', 'show', name])
+          .timeout(const Duration(seconds: 3));
+      return r.exitCode == 0;
+    } catch (_) {
+      return false;
     }
-    final r = await Process.run('ip', ['link', 'show', name]);
-    return r.exitCode == 0;
   }
 
   Future<void> _forceDown(String name) async {
     try {
       if (_isWindows) {
         await Process.run(
-            'wireguard.exe', ['/uninstalltunnelservice', name]);
+          'wireguard.exe',
+          ['/uninstalltunnelservice', name],
+        ).timeout(const Duration(seconds: 10));
       } else if (_confPath != null) {
-        await Process.run('sudo', ['wg-quick', 'down', _confPath!]);
+        // جرّب pkexec ثم sudo -n
+        final runners = <List<String>>[
+          ['pkexec', 'wg-quick', 'down', _confPath!],
+          ['sudo', '-n', 'wg-quick', 'down', _confPath!],
+        ];
+        for (final args in runners) {
+          try {
+            final exe = args.removeAt(0);
+            final r = await Process.run(exe, args)
+                .timeout(const Duration(seconds: 10));
+            if (r.exitCode == 0) break;
+          } catch (_) {}
+        }
       }
     } catch (_) {}
   }
+
+  // ------------------------------------------------------------------
+  // disconnect / kick
+  // ------------------------------------------------------------------
 
   @override
   Future<void> disconnect() async {
@@ -137,26 +267,47 @@ class VpnBridgeDesktop implements VpnBridge {
           await File(_confPath!).delete();
         } catch (_) {}
       }
-      _emit(const VpnState());
+      _confPath = null;
+      _tunnelName = null;
+      _lastConfig = null;
+      _emit(const VpnState(status: VpnStatus.disconnected));
     }
   }
 
   @override
-  Future<void> onNetworkChanged() async {
+  Future<void> kick() async {
+    final cfg = _lastConfig;
+    if (cfg == null) return;
     if (_state.status != VpnStatus.connected) return;
-    // PersistentKeepalive في الإعدادات يتكفل بالاتصال
+
+    _emit(VpnState(
+      status: VpnStatus.connecting,
+      activeConfigName: cfg.name,
+    ));
+    await _forceDown(cfg.name);
+    await Future.delayed(const Duration(seconds: 1));
+    await connect(cfg);
   }
+
+  @override
+  Future<bool> isConnected() async {
+    if (_state.status != VpnStatus.connected) return false;
+    final name = _tunnelName;
+    if (name == null) return false;
+    return await _isTunnelAlive(name);
+  }
+
+  @override
+  Future<void> onNetworkChanged() async => kick();
+
+  // ------------------------------------------------------------------
+  // helpers / lifecycle
+  // ------------------------------------------------------------------
 
   void _emit(VpnState s) {
     _state = s;
     _controller.add(s);
   }
-
-  @override
-  Stream<VpnState> get stateStream => _controller.stream;
-
-  @override
-  VpnState get currentState => _state;
 
   @override
   void dispose() {
