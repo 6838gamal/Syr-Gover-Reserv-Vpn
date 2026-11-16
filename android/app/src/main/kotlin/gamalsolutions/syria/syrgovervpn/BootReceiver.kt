@@ -7,8 +7,13 @@ import android.net.VpnService
 import android.util.Log
 
 class BootReceiver : BroadcastReceiver() {
+
+    companion object {
+        private const val TAG = "VPN_TAG"
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
-        Log.i("BootReceiver", "Received: ${intent.action}")
+        Log.i(TAG, "BootReceiver received: ${intent.action}")
 
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
@@ -16,37 +21,46 @@ class BootReceiver : BroadcastReceiver() {
             "android.intent.action.QUICKBOOT_POWERON",
             "com.htc.intent.action.QUICKBOOT_POWERON" -> {
 
-                // 1. إذا كان Always-on VPN مفعّلاً في النظام، النظام سيشغل
-                //    الخدمة تلقائياً — لا حاجة لفعل شيء. لنتحقق:
+                // 1) إذا كان Always-on VPN مفعّلاً في النظام، النظام سيشغل
+                //    الخدمة تلقائياً — لا حاجة لفعل شيء.
                 val alwaysOn = intent.getBooleanExtra("alwaysOn", false)
                 if (alwaysOn) {
-                    Log.i("BootReceiver", "Always-on VPN — النظام سيتكفل")
+                    Log.i(TAG, "Always-on VPN — النظام سيتكفل")
                     return
                 }
 
-                // 2. هل المستخدم فعّل auto-start لدينا؟
+                // 2) هل المستخدم فعّل auto-start لدينا؟
                 if (!ConfigPersistence.isAutostartEnabled(context)) {
-                    Log.i("BootReceiver", "Auto-start معطّل")
+                    Log.i(TAG, "Auto-start معطّل")
                     return
                 }
 
-                // 3. هل توجد إعدادات محفوظة؟
+                // 3) هل توجد إعدادات محفوظة؟
                 val config = ConfigPersistence.loadLastConfig(context)
                 if (config == null) {
-                    Log.w("BootReceiver", "لا توجد إعدادات محفوظة")
+                    Log.w(TAG, "لا توجد إعدادات محفوظة")
                     return
                 }
 
-                // 4. هل لدينا صلاحية VPN؟ (يجب أن يكون المستخدم وافق مسبقاً)
+                // 4) هل لدينا صلاحية VPN؟ (يجب أن يكون المستخدم وافق مسبقاً)
                 if (VpnService.prepare(context) != null) {
-                    Log.w("BootReceiver", "صلاحية VPN غير ممنوحة")
+                    Log.w(TAG, "صلاحية VPN غير ممنوحة")
+                    VpnStateBus.emit("error", "صلاحية VPN غير ممنوحة")
                     return
                 }
 
-                // 5. شغّل الخدمة
-                Log.i("BootReceiver", "بدء VPN تلقائياً")
-                MyVpnService.start(context, config)
+                // 5) شغّل الخدمة
+                Log.i(TAG, "بدء VPN تلقائياً")
+                try {
+                    MyVpnService.start(context, config)
+                    Log.i(TAG, "MyVpnService.start dispatched")
+                } catch (e: Exception) {
+                    Log.e(TAG, "autostart failed", e)
+                    VpnStateBus.emit("error", "autostart failed: ${e.message}")
+                }
             }
+
+            else -> Log.d(TAG, "BootReceiver: ignored action ${intent.action}")
         }
     }
 }
