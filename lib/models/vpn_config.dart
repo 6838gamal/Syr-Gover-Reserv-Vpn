@@ -8,6 +8,7 @@ class VpnConfig {
   final String endpoint;        // host:port (يُفضّل DNS name)
   final String allowedIps;
   final int persistentKeepalive;
+  final String? path;           // مسار الملف (Desktop فقط)
 
   VpnConfig({
     required this.name,
@@ -19,7 +20,12 @@ class VpnConfig {
     required this.endpoint,
     required this.allowedIps,
     required this.persistentKeepalive,
+    this.path,
   });
+
+  // ------------------------------------------------------------------
+  // من ملف .conf
+  // ------------------------------------------------------------------
 
   /// يحلل ملف .conf بصيغة wg-quick
   factory VpnConfig.fromConf(String content, {String name = 'imported'}) {
@@ -41,16 +47,30 @@ class VpnConfig {
 
       if (!inPeer) {
         switch (k) {
-          case 'privatekey': privateKey = v; break;
-          case 'address': address = v.split(',').first.trim(); break;
-          case 'dns': dns = v.split(',').first.trim(); break;
-          case 'mtu': mtu = int.tryParse(v) ?? 1280; break;
+          case 'privatekey':
+            privateKey = v;
+            break;
+          case 'address':
+            address = v.split(',').first.trim();
+            break;
+          case 'dns':
+            dns = v.split(',').first.trim();
+            break;
+          case 'mtu':
+            mtu = int.tryParse(v) ?? 1280;
+            break;
         }
       } else {
         switch (k) {
-          case 'publickey': peerPublic = v; break;
-          case 'endpoint': endpoint = v; break;
-          case 'allowedips': allowedIps = v; break;
+          case 'publickey':
+            peerPublic = v;
+            break;
+          case 'endpoint':
+            endpoint = v;
+            break;
+          case 'allowedips':
+            allowedIps = v;
+            break;
           case 'persistentkeepalive':
             keepalive = int.tryParse(v) ?? 25;
             break;
@@ -74,6 +94,10 @@ class VpnConfig {
     );
   }
 
+  // ------------------------------------------------------------------
+  // JSON (flutter_secure_storage)
+  // ------------------------------------------------------------------
+
   Map<String, dynamic> toJson() => {
         'name': name,
         'privateKey': privateKey,
@@ -84,6 +108,7 @@ class VpnConfig {
         'endpoint': endpoint,
         'allowedIps': allowedIps,
         'persistentKeepalive': persistentKeepalive,
+        if (path != null) 'path': path,
       };
 
   factory VpnConfig.fromJson(Map<String, dynamic> j) => VpnConfig(
@@ -91,12 +116,46 @@ class VpnConfig {
         privateKey: j['privateKey'] as String,
         address: j['address'] as String,
         dns: j['dns'] as String,
-        mtu: j['mtu'] as int,
+        // tolerant casting: قد يكون int/double/String من نسخ قديمة
+        mtu: _asInt(j['mtu']) ?? 1280,
         peerPublicKey: j['peerPublicKey'] as String,
         endpoint: j['endpoint'] as String,
         allowedIps: j['allowedIps'] as String,
-        persistentKeepalive: j['persistentKeepalive'] as int,
+        persistentKeepalive: _asInt(j['persistentKeepalive']) ?? 25,
+        path: j['path'] as String?,
       );
+
+  static int? _asInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    if (v is String) return int.tryParse(v);
+    return null;
+  }
+
+  // ------------------------------------------------------------------
+  // toMap (لإرسالها عبر MethodChannel إلى Kotlin)
+  // ------------------------------------------------------------------
+
+  /// المفاتيح هنا **يجب** أن تطابق ما يتوقعه `MyVpnService.buildConfig`:
+  /// configName, privateKey, address, dns, mtu, peerPublicKey, endpoint,
+  /// allowedIps, persistentKeepalive
+  Map<String, dynamic> toMap() => {
+        'configName': name,
+        // WireGuard يرفض المفاتيح مع '='
+        'privateKey': privateKey.replaceAll('=', '').trim(),
+        'address': address,
+        'dns': dns,
+        'mtu': mtu,
+        'peerPublicKey': peerPublicKey.replaceAll('=', '').trim(),
+        'endpoint': endpoint,
+        'allowedIps': allowedIps,
+        'persistentKeepalive': persistentKeepalive,
+      };
+
+  // ------------------------------------------------------------------
+  // toConf (Desktop)
+  // ------------------------------------------------------------------
 
   /// يحوّل إلى ملف .conf (يستخدمه desktop عند تشغيل wg-quick)
   String toConf() => '''
