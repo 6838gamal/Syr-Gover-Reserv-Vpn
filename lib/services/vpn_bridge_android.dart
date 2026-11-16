@@ -15,91 +15,164 @@ class VpnBridgeAndroid implements VpnBridge {
   StreamSubscription? _eventSub;
 
   @override
+  VpnState get currentState => _state;
+
+  @override
+  Stream<VpnState> get stateStream => _controller.stream;
+
+  // ------------------------------------------------------------------
+  // init
+  // ------------------------------------------------------------------
+
+  @override
   Future<void> init() async {
-    _eventSub = _events.receiveBroadcastStream().listen((event) {
-      final map = Map<String, dynamic>.from(event as Map);
-      _state = VpnState(
-        status: _parseStatus(map['status'] as String?),
-        errorMessage: map['error'] as String?,
-        activeConfigName: map['configName'] as String?,
-      );
-      _controller.add(_state);
-    });
+    _eventSub = _events.receiveBroadcastStream().listen(
+      _onNativeEvent,
+      onError: (e, st) {
+        _emitError('EventChannel error: $e');
+      },
+      cancelOnError: false,
+    );
+  }
+
+  /// Kotlin يرسل: {state, message, configName}
+  void _onNativeEvent(dynamic event) {
+    if (event is! Map) return;
+    final stateStr = event['state'] as String? ?? 'disconnected';
+    final message = event['message'] as String?;
+    final configName = event['configName'] as String?;
+
+    final status = _parseStatus(stateStr);
+    final prev = _state;
+    final nowConnected = status == VpnStatus.connected;
+
+    _state = VpnState(
+      status: status,
+      errorMessage:
+          status == VpnStatus.error ? (message ?? prev.errorMessage) : null,
+      activeConfigName: configName ?? prev.activeConfigName,
+      connectedSince: nowConnected
+          ? (prev.connectedSince ?? DateTime.now())
+          : null,
+    );
+    _controller.add(_state);
   }
 
   VpnStatus _parseStatus(String? s) {
-    switch (s) {
-      case 'connecting':
-        return VpnStatus.connecting;
-      case 'connected':
-        return VpnStatus.connected;
-      case 'disconnecting':
-        return VpnStatus.disconnecting;
-      case 'error':
-        return VpnStatus.error;
-      default:
-        return VpnStatus.disconnected;
+    return switch (s) {
+      'connecting' => VpnStatus.connecting,
+      'connected' => VpnStatus.connected,
+      'disconnecting' => VpnStatus.disconnecting,
+      'error' => VpnStatus.error,
+      _ => VpnStatus.disconnected,
+    };
+  }
+
+  void _emitError(String msg) {
+    _state = VpnState(status: VpnStatus.error, errorMessage: msg);
+    _controller.add(_state);
+  }
+
+  // ------------------------------------------------------------------
+  // VpnBridge contract
+  // ------------------------------------------------------------------
+
+  @override
+  Future<bool> requestPermission() async {
+    try {
+      return await _channel.invokeMethod<bool>('prepare') ?? false;
+    } on PlatformException catch (e) {
+      _emitError('prepare failed: ${e.code} ${e.message}');
+      return false;
     }
   }
 
   @override
-  Future<bool> requestPermission() async {
-    final ok = await _channel.invokeMethod<bool>('prepare');
-    return ok ?? false;
+  Future<bool> requestNotificationPermission() async {
+    try {
+      // موجود في MainActivity المحدث
+      return await _channel
+              .invokeMethod<bool>('requestNotificationPermission') ??
+          true;
+    } on PlatformException {
+      // لا نُفشل الاتصال — الإشعار تحسين فقط
+      return true;
+    } on MissingPluginException {
+      // إصدار قديم من MainActivity لا يدعمها — تجاهل
+      return true;
+    }
   }
 
   @override
   Future<void> connect(VpnConfig config) async {
-    await _channel.invokeMethod('connect', {
-      'privateKey': config.privateKey,
-      'address': config.address,
-      'dns': config.dns,
-      'mtu': config.mtu,
-      'peerPublicKey': config.peerPublicKey,
-      'endpoint': config.endpoint,
-      'allowedIps': config.allowedIps,
-      'persistentKeepalive': config.persistentKeepalive,
-      'configName': config.name,
-    });
+    try {
+      await _channel.invokeMethod('connect', config.toMap());
+    } on PlatformException catch (e) {
+      _emitError('connect failed: ${e.code} ${e.message}');
+      rethrow;
+    }
   }
 
   @override
-  Future<void> disconnect() => _channel.invokeMethod('disconnect');
+  Future<void> disconnect() async {
+    try {
+      await _channel.invokeMethod('disconnect');
+    } on PlatformException catch (e) {
+      _emitError('disconnect failed: ${e.code} ${e.message}');
+      rethrow;
+    }
+  }
 
   @override
-  Future<void> onNetworkChanged() => _channel.invokeMethod('kick');
+  Future<void> kick() async {
+    try {
+      await _channel.invokeMethod('kick');
+    } on PlatformException catch (e) {
+      _emitError('kick failed: ${e.code} ${e.message}');
+    }
+  }
 
-  // ---------- دوال Android-specific ----------
+  @override
+  Future<bool> isConnected() async {
+    try {
+      return await _channel.invokeMethod<bool>('isConnected') ?? false;
+    } on PlatformException {
+      return _state.status == VpnStatus.connected;
+    } on MissingPluginException {
+      return _state.status == VpnStatus.connected;
+    }
+  }
 
-  /// هل auto-start مفعّل؟
+  @override
+  Future<void> onNetworkChanged() async => kick();
+
+  // ------------------------------------------------------------------
+  // دوال Android-specific
+  // ------------------------------------------------------------------
+
   Future<bool> isAutostartEnabled() async {
     final v = await _channel.invokeMethod<bool>('getAutostart');
     return v ?? false;
   }
 
-  /// فعّل/عطّل auto-start
   Future<void> setAutostart(bool enabled) async {
     await _channel.invokeMethod('setAutostart', {'enabled': enabled});
   }
 
-  /// افتح إعدادات Always-on VPN في النظام
   Future<bool> openAlwaysOnSettings() async {
     final v = await _channel.invokeMethod<bool>('openAlwaysOnSettings');
     return v ?? false;
   }
 
-  /// اطلب إعفاء من تحسين البطارية (ضروري على Xiaomi/Huawei/Samsung)
   Future<bool> requestBatteryOptimizationExemption() async {
-    final v = await _channel
-        .invokeMethod<bool>('openBatteryOptimizationSettings');
+    final v =
+        await _channel.invokeMethod<bool>('openBatteryOptimizationSettings');
     return v ?? false;
   }
 
-  @override
-  Stream<VpnState> get stateStream => _controller.stream;
-
-  @override
-  VpnState get currentState => _state;
+  // ------------------------------------------------------------------
+  // dispose
+  // ------------------------------------------------------------------
 
   @override
   void dispose() {
