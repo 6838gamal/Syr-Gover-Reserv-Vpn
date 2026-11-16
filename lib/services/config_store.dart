@@ -1,5 +1,8 @@
 import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
 import '../models/vpn_config.dart';
 
 class ConfigStore {
@@ -8,13 +11,24 @@ class ConfigStore {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
+  /// تحميل كل الإعدادات. آمن ضد JSON التالف.
   Future<List<VpnConfig>> loadAll() async {
-    final raw = await _storage.read(key: _key);
-    if (raw == null || raw.isEmpty) return [];
-    final list = jsonDecode(raw) as List<dynamic>;
-    return list
-        .map((e) => VpnConfig.fromJson(e as Map<String, dynamic>))
-        .toList();
+    try {
+      final raw = await _storage.read(key: _key);
+      if (raw == null || raw.isEmpty) return [];
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        debugPrint('ConfigStore: corrupted storage (not a list)');
+        return [];
+      }
+      return decoded
+          .whereType<Map<String, dynamic>>()
+          .map(VpnConfig.fromJson)
+          .toList();
+    } catch (e) {
+      debugPrint('ConfigStore.loadAll failed: $e');
+      return [];
+    }
   }
 
   Future<void> saveAll(List<VpnConfig> configs) async {
@@ -33,5 +47,25 @@ class ConfigStore {
     final all = await loadAll();
     all.removeWhere((c) => c.name == name);
     await saveAll(all);
+  }
+
+  Future<void> clear() async {
+    await _storage.delete(key: _key);
+  }
+
+  /// بحث بالاسم.
+  Future<VpnConfig?> getByName(String name) async {
+    final all = await loadAll();
+    try {
+      return all.firstWhere((c) => c.name == name);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// أول إعدادات (للاستخدام بعد إعادة التشغيل).
+  Future<VpnConfig?> getFirst() async {
+    final all = await loadAll();
+    return all.isEmpty ? null : all.first;
   }
 }
