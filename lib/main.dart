@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'models/vpn_config.dart';
@@ -12,32 +14,167 @@ import 'services/internet_check.dart';
 import 'services/vpn_bridge.dart';
 import 'services/vpn_bridge_factory.dart';
 
+// =============================================================================
+// نماذج مساعدة (يمكن نقلها لاحقاً إلى ملفات منفصلة)
+// =============================================================================
+
+enum LogLevel { info, warn, error }
+
+class VpnLog {
+  final DateTime time;
+  final String message;
+  final LogLevel level;
+
+  VpnLog(this.message, {this.level = LogLevel.info}) : time = DateTime.now();
+
+  String get formattedTime {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
+  }
+}
+
+class SessionPersister {
+  static const _kSince = 'vpn.connected_since_ms';
+  static const _kConfig = 'vpn.active_config_name';
+
+  Future<void> save({
+    required DateTime since,
+    required String configName,
+  }) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt(_kSince, since.millisecondsSinceEpoch);
+    await p.setString(_kConfig, configName);
+  }
+
+  Future<void> clear() async {
+    final p = await SharedPreferences.getInstance();
+    await p.remove(_kSince);
+    await p.remove(_kConfig);
+  }
+
+  Future<({DateTime since, String configName})?> load() async {
+    final p = await SharedPreferences.getInstance();
+    final ms = p.getInt(_kSince);
+    final name = p.getString(_kConfig);
+    if (ms == null || name == null) return null;
+    return (since: DateTime.fromMillisecondsSinceEpoch(ms), configName: name);
+  }
+}
+
+// =============================================================================
+// VpnController
+// =============================================================================
+
 class VpnController extends ChangeNotifier {
   final VpnBridge bridge;
   final ConfigStore store = ConfigStore();
+  final SessionPersister _session = SessionPersister();
 
   StreamSubscription<VpnState>? _stateSub;
   Timer? _networkWatchdog;
   bool _wasConnectedBeforeOutage = false;
   bool _autoReconnectEnabled = true;
 
+  final List<VpnLog> _logs = [];
+  List<VpnLog> get logs => List.unmodifiable(_logs);
+
   VpnController(this.bridge) {
     _stateSub = bridge.stateStream.listen(_onStateChanged);
     _startNetworkWatchdog();
+    _bootstrap();
   }
+
+  // ------------------------- Bootstrap -------------------------
+
+  Future<void> _bootstrap() async {
+    log('controller initialized');
+    await restoreSession();
+  }
+
+  /// يتحقق من الجلسة المحفوظة ويطابقها مع حالة الجسر.
+  Future<void> restoreSession() async {
+    final saved = await _session.load();
+    final s = state;
+
+    if (s.status != VpnStatus.connected) {
+      if (saved != null) {
+        log('stale session found (state=${s.status.name}) → cleared',
+            level: LogLevel.warn);
+        await _session.clear();
+      }
+      return;
+    }
+
+    if (saved == null) {
+      log('connected but no saved session → synthesizing since=now',
+          level: LogLevel.warn);
+      await _session.save(
+        since: DateTime.now(),
+        configName: s.activeConfigName ?? 'unknown',
+      );
+      notifyListeners();
+      return;
+    }
+
+    log('restored session: ${saved.configName} since ${saved.since}');
+    notifyListeners();
+  }
+
+  // ------------------------- Logs -------------------------
+
+  void log(String message, {LogLevel level = LogLevel.info}) {
+    _logs.add(VpnLog(message, level: level));
+    if (_logs.length > 500) _logs.removeAt(0);
+    final tag = switch (level) {
+      LogLevel.info => 'INFO ',
+      LogLevel.warn => 'WARN ',
+      LogLevel.error => 'ERROR',
+    };
+    debugPrint('[VPN $tag] $message');
+    notifyListeners();
+  }
+
+  void clearLogs() {
+    _logs.clear();
+    notifyListeners();
+  }
+
+  // ------------------------- Getters -------------------------
 
   VpnState get state => bridge.currentState;
 
   bool get autoReconnectEnabled => _autoReconnectEnabled;
   set autoReconnectEnabled(bool v) {
     _autoReconnectEnabled = v;
+    log('autoReconnect = $v');
     notifyListeners();
   }
 
+  // ------------------------- State events -------------------------
+
   void _onStateChanged(VpnState s) {
-    if (s.status == VpnStatus.connected) _wasConnectedBeforeOutage = true;
+    log('state → ${s.status.name}'
+        '${s.errorMessage != null ? " (${s.errorMessage})" : ""}');
+    if (s.status == VpnStatus.connected) {
+      _wasConnectedBeforeOutage = true;
+      _persistSession();
+    } else if (s.status == VpnStatus.disconnected ||
+        s.status == VpnStatus.error) {
+      _session.clear();
+    }
     notifyListeners();
   }
+
+  Future<void> _persistSession() async {
+    final s = state;
+    if (s.status != VpnStatus.connected) return;
+    final since = s.connectedSince ?? DateTime.now();
+    final name = s.activeConfigName ?? 'unknown';
+    await _session.save(since: since, configName: name);
+    log('session persisted ($name, since=$since)');
+  }
+
+  // ------------------------- Watchdog -------------------------
 
   void _startNetworkWatchdog() {
     _networkWatchdog?.cancel();
@@ -49,20 +186,64 @@ class VpnController extends ChangeNotifier {
       if (!online) return;
       try {
         await bridge.onNetworkChanged();
-      } catch (_) {}
+      } catch (e) {
+        log('watchdog error: $e', level: LogLevel.error);
+      }
     });
   }
 
+  // ------------------------- Connect / Disconnect -------------------------
+
   Future<bool> connect(VpnConfig config) async {
-    final ok = await bridge.requestPermission();
-    if (!ok) return false;
-    await bridge.connect(config);
-    return true;
+    log('connect requested: ${config.name} → ${config.endpoint}');
+
+    log('checking VPN permission...');
+    bool granted;
+    try {
+      granted = await bridge.requestPermission()
+          .timeout(const Duration(seconds: 60));
+    } catch (e) {
+      log('permission error: $e', level: LogLevel.error);
+      return false;
+    }
+    if (!granted) {
+      log('permission denied', level: LogLevel.warn);
+      return false;
+    }
+    log('permission granted');
+
+    log('starting tunnel...');
+    try {
+      await bridge.connect(config).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          log('connect timeout (30s)', level: LogLevel.error);
+          throw TimeoutException('connect timeout');
+        },
+      );
+      log('connect() returned');
+      return true;
+    } on PlatformException catch (e) {
+      log('PlatformException: ${e.code} ${e.message}', level: LogLevel.error);
+      return false;
+    } on TimeoutException {
+      return false;
+    } catch (e) {
+      log('connect error: $e', level: LogLevel.error);
+      return false;
+    }
   }
 
   Future<void> disconnect() async {
+    log('disconnect requested');
     _wasConnectedBeforeOutage = false;
-    await bridge.disconnect();
+    try {
+      await bridge.disconnect().timeout(const Duration(seconds: 10));
+    } catch (e) {
+      log('disconnect error: $e', level: LogLevel.error);
+    }
+    await _session.clear();
+    log('session cleared');
   }
 
   @override
@@ -73,6 +254,10 @@ class VpnController extends ChangeNotifier {
     super.dispose();
   }
 }
+
+// =============================================================================
+// main()
+// =============================================================================
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -97,6 +282,10 @@ void main() async {
   );
 }
 
+// =============================================================================
+// شاشة خطأ بدء التشغيل
+// =============================================================================
+
 class _BootstrapErrorApp extends StatelessWidget {
   final String message;
   final String stack;
@@ -117,9 +306,10 @@ class _BootstrapErrorApp extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('فشل بدء التشغيل',
-                  style:
-                      TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const Text(
+                'فشل بدء التشغيل',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 12),
               Text(message, style: const TextStyle(color: Colors.redAccent)),
               const SizedBox(height: 12),
@@ -128,9 +318,10 @@ class _BootstrapErrorApp extends StatelessWidget {
                   child: Text(
                     stack,
                     style: const TextStyle(
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                        color: Colors.white70),
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                      color: Colors.white70,
+                    ),
                   ),
                 ),
               ),
