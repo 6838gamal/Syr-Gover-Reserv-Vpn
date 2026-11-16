@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -5,6 +7,7 @@ import '../main.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'import_screen.dart';
+import 'logs_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -14,7 +17,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<VpnConfig> _configs = [];
   VpnConfig? _selected;
   bool _loading = true;
@@ -22,7 +25,22 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadConfigs());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // عند العودة للتطبيق، تأكد أن الحالة مطابقة للواقع
+    if (state == AppLifecycleState.resumed) {
+      context.read<VpnController>().restoreSession();
+    }
   }
 
   Future<void> _loadConfigs() async {
@@ -31,10 +49,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     setState(() {
       _configs = list;
-      // حافظ على الاختيار السابق إن وُجد
       if (_selected != null) {
         final idx = list.indexWhere((c) => c.name == _selected!.name);
-        _selected = idx >= 0 ? list[idx] : (list.isNotEmpty ? list.first : null);
+        _selected =
+            idx >= 0 ? list[idx] : (list.isNotEmpty ? list.first : null);
       } else {
         _selected = list.isNotEmpty ? list.first : null;
       }
@@ -51,13 +69,20 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    if (st == VpnStatus.disconnected && _selected != null) {
+    if ((st == VpnStatus.disconnected || st == VpnStatus.error) &&
+        _selected != null) {
       final ok = await ctrl.connect(_selected!);
       if (!ok && mounted) {
+        final msg = ctrl.state.errorMessage ?? 'تعذّر الاتصال';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('تعذّر الحصول على صلاحية VPN'),
+          SnackBar(
+            content: Text(msg),
             backgroundColor: Colors.redAccent,
+            action: SnackBarAction(
+              label: 'السجل',
+              textColor: Colors.white,
+              onPressed: () => _openLogs(),
+            ),
           ),
         );
       }
@@ -79,6 +104,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _openLogs() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LogsScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ctrl = context.watch<VpnController>();
@@ -90,6 +122,11 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('My VPN'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.receipt_long),
+            tooltip: 'سجل الاتصال',
+            onPressed: _openLogs,
+          ),
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: 'استيراد إعدادات',
@@ -122,7 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   _StatusCard(state: state),
                   const SizedBox(height: 20),
-                  _buildConfigPicker(),
+                  _buildConfigPicker(enabled: !busy),
                   const SizedBox(height: 16),
                   if (_selected != null) _buildDetails(_selected!),
                   const Spacer(),
@@ -133,7 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildConfigPicker() {
+  Widget _buildConfigPicker({required bool enabled}) {
     if (_configs.isEmpty) {
       return Card(
         child: Padding(
@@ -170,7 +207,7 @@ class _HomeScreenState extends State<HomeScreen> {
       items: _configs
           .map((c) => DropdownMenuItem(value: c, child: Text(c.name)))
           .toList(),
-      onChanged: (c) => setState(() => _selected = c),
+      onChanged: enabled ? (c) => setState(() => _selected = c) : null,
     );
   }
 
@@ -185,8 +222,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _detailRow(Icons.lan, 'Address', c.address),
             _detailRow(Icons.public, 'DNS', c.dns),
             _detailRow(Icons.speed, 'MTU', '${c.mtu}'),
-            _detailRow(Icons.timer, 'Keepalive',
-                '${c.persistentKeepalive}s'),
+            _detailRow(Icons.timer, 'Keepalive', '${c.persistentKeepalive}s'),
             _detailRow(Icons.vpn_key, 'Allowed IPs', c.allowedIps),
           ],
         ),
@@ -245,10 +281,22 @@ class _StatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final (color, label, icon) = switch (state.status) {
       VpnStatus.connected => (Colors.green, 'متصل', Icons.shield),
-      VpnStatus.connecting => (Colors.orange, 'جارٍ الاتصال...', Icons.hourglass_top),
-      VpnStatus.disconnecting => (Colors.orange, 'جارٍ القطع...', Icons.hourglass_bottom),
+      VpnStatus.connecting => (
+          Colors.orange,
+          'جارٍ الاتصال...',
+          Icons.hourglass_top
+        ),
+      VpnStatus.disconnecting => (
+          Colors.orange,
+          'جارٍ القطع...',
+          Icons.hourglass_bottom
+        ),
       VpnStatus.error => (Colors.red, 'خطأ', Icons.error),
-      VpnStatus.disconnected => (Colors.grey, 'غير متصل', Icons.shield_outlined),
+      VpnStatus.disconnected => (
+          Colors.grey,
+          'غير متصل',
+          Icons.shield_outlined
+        ),
     };
 
     return Card(
@@ -279,6 +327,11 @@ class _StatusCard extends StatelessWidget {
                 style: const TextStyle(fontSize: 12, color: Colors.white70),
               ),
             ],
+            if (state.status == VpnStatus.connected &&
+                state.connectedSince != null) ...[
+              const SizedBox(height: 6),
+              _ConnectedTimer(since: state.connectedSince!),
+            ],
             if (state.errorMessage != null) ...[
               const SizedBox(height: 8),
               Text(
@@ -290,6 +343,58 @@ class _StatusCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// مؤقت المدة الحية
+// -----------------------------------------------------------------------------
+class _ConnectedTimer extends StatefulWidget {
+  final DateTime since;
+  const _ConnectedTimer({required this.since});
+
+  @override
+  State<_ConnectedTimer> createState() => _ConnectedTimerState();
+}
+
+class _ConnectedTimerState extends State<_ConnectedTimer> {
+  Timer? _t;
+
+  @override
+  void initState() {
+    super.initState();
+    _t = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _t?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final d = DateTime.now().difference(widget.since);
+    String two(int n) => n.toString().padLeft(2, '0');
+    final txt =
+        '${two(d.inHours)}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}';
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(Icons.timer_outlined, size: 14, color: Colors.white54),
+        const SizedBox(width: 4),
+        Text(
+          txt,
+          style: const TextStyle(
+            fontSize: 13,
+            color: Colors.white70,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
     );
   }
 }
