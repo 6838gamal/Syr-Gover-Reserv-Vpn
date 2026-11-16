@@ -1,21 +1,44 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ==================== الأذونات ==================== -->
+
+    <!-- الإنترنت والشبكة (أساسي) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- الخدمة في المقدمة (VPN) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- الإشعارات (Android 13+ تحتاج طلباً وقت التشغيل) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- منع قتل الخدمة عند نوم الجهاز -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- استثناء من تحسين البطارية (اختياري لكن مهم لاستمرار VPN) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- إعادة التشغيل التلقائي -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- ==================== التطبيق ==================== -->
+
     <application
-        android:label="my_vpn"
+        android:label="My VPN"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        android:allowBackup="false"
+        android:supportsRtl="true">
 
-        <!-- ✅ هذا هو السطر الحاسم الذي كان ناقصاً -->
+        <!-- إلزامي لـ Flutter embedding v2 -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- ==================== MainActivity ==================== -->
 
         <activity
             android:name=".MainActivity"
@@ -29,35 +52,46 @@
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
             <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- خدمة VPN — SUPPORTS_ALWAYS_ON ضروري -->
+        <!-- ==================== MyVpnService ==================== -->
+
         <service
             android:name=".MyVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+
             <intent-filter>
-                <action android:name="android.net.VpnService"/>
+                <action android:name="android.net.VpnService" />
             </intent-filter>
+
+            <!-- Always-On VPN -->
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
                 android:value="true" />
+
+            <!-- مطلوب على Android 14+ مع foregroundServiceType="specialUse" -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
         </service>
 
-        <!-- استقبال إعادة الإقلاع -->
+        <!-- ==================== BootReceiver ==================== -->
+
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
-                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
 
