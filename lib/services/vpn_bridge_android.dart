@@ -14,6 +14,9 @@ class VpnBridgeAndroid implements VpnBridge {
   VpnState _state = const VpnState();
   StreamSubscription? _eventSub;
 
+  // ✅ ذاكرة تخزين مؤقتة لاسم الإعدادات لضمان عدم ضياعه
+  String? _lastKnownConfigName;
+
   @override
   VpnState get currentState => _state;
 
@@ -31,7 +34,6 @@ class VpnBridgeAndroid implements VpnBridge {
       onError: (e, st) => _emitError('EventChannel error: $e'),
       cancelOnError: false,
     );
-    // اطلب الحالة الحالية فوراً
     await refreshState();
   }
 
@@ -40,35 +42,40 @@ class VpnBridgeAndroid implements VpnBridge {
     try {
       final snapshot = await _channel.invokeMethod<Map>('getState');
       if (snapshot != null) _onNativeEvent(snapshot);
-    } on PlatformException catch (e) {
-      // لا نُفشل — قد يكون getState غير مدعوم في نسخة قديمة
-    } on MissingPluginException {
+    } on PlatformException {
       // تجاهل
     }
   }
 
   void _onNativeEvent(dynamic event) {
     if (event is! Map) return;
-    // نقرأ من state أو status أيهما موجود (توافق)
-    final stateStr =
-        (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
-    final message =
-        (event['message'] as String?) ?? (event['error'] as String?);
+    
+    final stateStr = (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
+    final message = (event['message'] as String?) ?? (event['error'] as String?);
     final configName = event['configName'] as String?;
 
     final status = _parseStatus(stateStr);
-    final prev = _state;
+    
+    // ✅ إذا وصلنا اسم جديد، احفظه
+    if (configName != null && configName.isNotEmpty) {
+      _lastKnownConfigName = configName;
+    }
+
     final nowConnected = status == VpnStatus.connected;
+    final prev = _state;
 
     _state = VpnState(
       status: status,
-      errorMessage:
-          status == VpnStatus.error ? (message ?? prev.errorMessage) : null,
-      activeConfigName: configName ?? prev.activeConfigName,
+      errorMessage: status == VpnStatus.error ? (message ?? prev.errorMessage) : null,
+      // ✅ استخدم الاسم الجديد أو المحفوظ مسبقاً
+      activeConfigName: (status == VpnStatus.disconnected) 
+          ? null 
+          : (configName ?? _lastKnownConfigName),
       connectedSince: nowConnected
           ? (prev.connectedSince ?? DateTime.now())
           : null,
     );
+    
     _controller.add(_state);
   }
 
@@ -104,18 +111,16 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Future<bool> requestNotificationPermission() async {
     try {
-      return await _channel
-              .invokeMethod<bool>('requestNotificationPermission') ??
-          true;
-    } on PlatformException {
-      return true;
-    } on MissingPluginException {
+      return await _channel.invokeMethod<bool>('requestNotificationPermission') ?? true;
+    } catch (_) {
       return true;
     }
   }
 
   @override
   Future<void> connect(VpnConfig config) async {
+    // ✅ حفظ الاسم فوراً قبل الإرسال لضمان عدم ضياعه
+    _lastKnownConfigName = config.name;
     try {
       await _channel.invokeMethod('connect', config.toMap());
     } on PlatformException catch (e) {
@@ -128,6 +133,7 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<void> disconnect() async {
     try {
       await _channel.invokeMethod('disconnect');
+      _lastKnownConfigName = null;
     } on PlatformException catch (e) {
       _emitError('disconnect failed: ${e.code} ${e.message}');
       rethrow;
@@ -147,9 +153,7 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<bool> isConnected() async {
     try {
       return await _channel.invokeMethod<bool>('isConnected') ?? false;
-    } on PlatformException {
-      return _state.status == VpnStatus.connected;
-    } on MissingPluginException {
+    } catch (_) {
       return _state.status == VpnStatus.connected;
     }
   }
@@ -176,8 +180,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   Future<bool> requestBatteryOptimizationExemption() async {
-    final v =
-        await _channel.invokeMethod<bool>('openBatteryOptimizationSettings');
+    final v = await _channel.invokeMethod<bool>('openBatteryOptimizationSettings');
     return v ?? false;
   }
 
