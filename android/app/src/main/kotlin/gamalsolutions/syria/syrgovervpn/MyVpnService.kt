@@ -199,13 +199,12 @@ class MyVpnService : VpnService() {
 
     private fun connect(args: Map<String, Any>) {
         lastArgs = args
-        // ✅ الحل: اقرأ الاسم، وإذا لم يوجد استخدم اسم افتراضي
         currentConfigName = args["configName"] as? String ?: "VPN Config"
 
         scope.launch {
             try {
                 VpnStateBus.emit("connecting", null, currentConfigName)
-                updateNotification("جارٍ الاتصال بـ $currentConfigName...") // ✅ تحديث الإشعار فوراً
+                updateNotification("جارٍ الاتصال بـ $currentConfigName...")
 
                 Log.d(TAG, "checking VPN permission via prepare()")
                 if (prepare(this@MyVpnService) != null) {
@@ -242,14 +241,13 @@ class MyVpnService : VpnService() {
                 Log.d(TAG, "calling setState(UP)")
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
-                    Log.i(TAG, "tunnel UP")
-                    // ✅ إرسال صريح — لا نعتمد على WgTunnel.onStateChange فقط
+                    Log.i(TAG, "tunnel UP successfully")
                     VpnStateBus.emit("connected", null, currentConfigName)
-                    updateNotification("متصل — $currentConfigName") // ✅ تحديث الإشعار
+                    updateNotification("متصل — $currentConfigName")
                 } catch (e: Throwable) {
-                    Log.e(TAG, "setState(UP) failed", e)
+                    Log.e(TAG, "WireGuard setState(UP) FAILED", e)
                     VpnStateBus.emit("error", "فشل الاتصال: ${e.message}")
-                    updateNotification("خطأ: ${e.message}")
+                    updateNotification("فشل الاتصال")
                     stopSelf()
                 }
             } catch (e: Throwable) {
@@ -328,7 +326,6 @@ class MyVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         try {
-            // ✅ تحقق من POST_NOTIFICATIONS على Android 13+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS
@@ -339,8 +336,11 @@ class MyVpnService : VpnService() {
                 }
             }
             Log.d(TAG, "updateNotification: $text")
-            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIF_ID, buildNotification(text))
+            val notification = buildNotification(text)
+            
+            // ✅ إصلاح: استخدام startForeground لتحديث الإشعار بشكل قسري
+            startForeground(NOTIF_ID, notification)
+            
         } catch (e: Exception) {
             Log.w(TAG, "updateNotification failed", e)
         }
