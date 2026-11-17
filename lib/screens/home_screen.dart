@@ -37,9 +37,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // عند العودة للتطبيق، تأكد أن الحالة مطابقة للواقع
     if (state == AppLifecycleState.resumed) {
-      context.read<VpnController>().restoreSession();
+      // يطلب الحالة الحقيقية من Kotlin (getState) ثم يزامن الجلسة
+      context.read<VpnController>().refreshState();
     }
   }
 
