@@ -119,7 +119,6 @@ class MyVpnService : VpnService() {
         isRunning = true
         createChannel()
         startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
-        // ✅ أرسل الحالة الأولية فوراً
         VpnStateBus.emit("connecting", null, null)
     }
 
@@ -235,11 +234,18 @@ class MyVpnService : VpnService() {
                 tunnel = t
 
                 Log.d(TAG, "calling setState(UP)")
-                backend!!.setState(t, Tunnel.State.UP, cfg)
-                Log.i(TAG, "tunnel UP")
-
-                // WgTunnel.onStateChange(UP) يرسل "connected" مع configName
-                updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
+                try {
+                    backend!!.setState(t, Tunnel.State.UP, cfg)
+                    Log.i(TAG, "tunnel UP")
+                    // ✅ إرسال صريح — لا نعتمد على WgTunnel.onStateChange فقط
+                    VpnStateBus.emit("connected", null, currentConfigName)
+                    updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
+                } catch (e: Throwable) {
+                    Log.e(TAG, "setState(UP) failed", e)
+                    VpnStateBus.emit("error", "فشل الاتصال: ${e.message}")
+                    updateNotification("خطأ: ${e.message}")
+                    stopSelf()
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
                 VpnStateBus.emit("error", e.message ?: e.toString())
