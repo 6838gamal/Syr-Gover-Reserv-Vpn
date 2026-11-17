@@ -97,6 +97,11 @@ class MainActivity : FlutterActivity() {
                             Log.d(TAG, "isConnected → $running")
                             result.success(running)
                         }
+                        "getState" -> {
+                            val snapshot = VpnStateBus.snapshot()
+                            Log.d(TAG, "getState → $snapshot")
+                            result.success(snapshot)
+                        }
                         "requestNotificationPermission" ->
                             handleRequestNotification(result)
                         "getAutostart" ->
@@ -138,7 +143,7 @@ class MainActivity : FlutterActivity() {
     }
 
     // ------------------------------------------------------------------
-    // Permissions results
+    // Permission results
     // ------------------------------------------------------------------
 
     @Deprecated("Deprecated in Java")
