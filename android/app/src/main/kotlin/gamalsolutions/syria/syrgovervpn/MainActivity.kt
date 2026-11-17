@@ -12,13 +12,13 @@ import android.provider.Settings
 import android.util.Log
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity   // ← تغيير
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {              // ← تغيير
 
     companion object {
         private const val TAG = "VPN_TAG"
@@ -33,7 +33,6 @@ class MainActivity : FlutterActivity() {
     // sink محلي (مرآة لـ VpnStateBus.sink)
     private var eventSink: EventChannel.EventSink? = null
 
-    // ✅ لطلب صلاحية VPN (بديل startActivityForResult المهجور)
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -43,7 +42,6 @@ class MainActivity : FlutterActivity() {
         pendingPermissionResult = null
     }
 
-    // ✅ لطلب صلاحية POST_NOTIFICATIONS (Android 13+)
     private val notificationPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -67,45 +65,35 @@ class MainActivity : FlutterActivity() {
                 try {
                     when (call.method) {
                         "prepare" -> handlePrepare(result)
-
                         "connect" -> handleConnect(call, result)
-
                         "disconnect" -> {
                             Log.d(TAG, "disconnect requested")
                             MyVpnService.stop(this)
                             VpnStateBus.emit("disconnecting", null)
                             result.success(null)
                         }
-
                         "kick" -> {
                             Log.d(TAG, "kick requested")
                             MyVpnService.kick()
                             result.success(null)
                         }
-
                         "isConnected" -> {
                             val running = MyVpnService.isRunning
                             Log.d(TAG, "isConnected → $running")
                             result.success(running)
                         }
-
                         "requestNotificationPermission" ->
                             handleRequestNotification(result)
-
                         "getAutostart" ->
                             result.success(ConfigPersistence.isAutostartEnabled(this))
-
                         "setAutostart" -> {
                             val enabled = call.argument<Boolean>("enabled") ?: false
                             ConfigPersistence.setAutostart(this, enabled)
                             result.success(null)
                         }
-
                         "openAlwaysOnSettings" -> handleOpenAlwaysOn(result)
-
                         "openBatteryOptimizationSettings" ->
                             handleBatteryOptimization(result)
-
                         else -> {
                             Log.w(TAG, "unknown method: ${call.method}")
                             result.notImplemented()
@@ -125,10 +113,8 @@ class MainActivity : FlutterActivity() {
                     Log.d(TAG, "EventChannel onListen")
                     eventSink = sink
                     VpnStateBus.sink = sink
-                    // أرسل الحالة الحالية فوراً كي لا تبقى الواجهة عالقة
                     sink?.success(VpnStateBus.snapshot())
                 }
-
                 override fun onCancel(args: Any?) {
                     Log.d(TAG, "EventChannel onCancel")
                     eventSink = null
@@ -140,15 +126,12 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         Log.d(TAG, "MainActivity.onDestroy")
         eventSink = null
-        // لا نُفرّغ VpnStateBus.sink هنا لأن الخدمة قد تستمر
         super.onDestroy()
     }
 
     // ============================================================
     // Handlers
     // ============================================================
-
-    // ------------------------- prepare -------------------------
 
     private fun handlePrepare(result: MethodChannel.Result) {
         val intent = VpnService.prepare(this)
@@ -173,8 +156,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ------------------------- connect -------------------------
-
     private fun handleConnect(call: MethodCall, result: MethodChannel.Result) {
         @Suppress("UNCHECKED_CAST")
         val args = call.arguments as? Map<String, Any>
@@ -185,7 +166,6 @@ class MainActivity : FlutterActivity() {
         }
         Log.d(TAG, "connect args keys=${args.keys}")
 
-        // تحقق سريع من الصلاحية قبل بدء الخدمة
         val prepareIntent = VpnService.prepare(this)
         if (prepareIntent != null) {
             Log.w(TAG, "connect called without VPN permission")
@@ -204,11 +184,8 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ------------------------- POST_NOTIFICATIONS -------------------------
-
     private fun handleRequestNotification(result: MethodChannel.Result) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            // لا حاجة قبل Android 13
             result.success(true)
             return
         }
@@ -236,10 +213,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ------------------------- Always-On -------------------------
-
     private fun handleOpenAlwaysOn(result: MethodChannel.Result) {
-        // المحاولة الأولى: شاشة Always-On المخصصة
         try {
             startActivity(Intent("android.net.vpn.SETTINGS"))
             result.success(true)
@@ -247,7 +221,6 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "android.net.vpn.SETTINGS not available: ${e.message}")
         }
-        // الاحتياطي: شاشة إعدادات VPN العامة
         try {
             startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
             result.success(true)
@@ -256,8 +229,6 @@ class MainActivity : FlutterActivity() {
             result.success(false)
         }
     }
-
-    // ------------------------- Battery optimization -------------------------
 
     private fun handleBatteryOptimization(result: MethodChannel.Result) {
         try {
