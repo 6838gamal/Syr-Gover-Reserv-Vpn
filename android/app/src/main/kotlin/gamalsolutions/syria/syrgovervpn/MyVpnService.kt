@@ -251,7 +251,7 @@ class MyVpnService : VpnService() {
                     // ✅ إرسال الخطأ الحقيقي إلى شاشة السجل في التطبيق
                     VpnStateBus.emit("error", "فشل النفق: ${e.message}")
                     updateNotification("فشل الاتصال")
-                    stopSelf()
+                    // ❌ لا نستخدم stopSelf هنا، بل نترك الخدمة تعمل لحظياً حتى يُغلقها VpnController
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
@@ -281,23 +281,35 @@ class MyVpnService : VpnService() {
     }
 
     // ------------------------------------------------------------------
-    // Config
+    // Config (مع طباعة السجل لتشخيص الأخطاء)
     // ------------------------------------------------------------------
 
     private fun buildConfig(args: Map<String, Any>): Config {
+        Log.d(TAG, "بناء إعدادات WireGuard...")
+        val privateKey = (args["privateKey"] as String).trim()
+        val address = (args["address"] as String).trim()
+        val dns = (args["dns"] as String).trim()
+        val peerPublicKey = (args["peerPublicKey"] as String).trim()
+        val endpoint = (args["endpoint"] as String).trim()
+        val allowedIps = (args["allowedIps"] as String).trim()
+        val keepalive = (args["persistentKeepalive"] as Int)
+
+        Log.d(TAG, "Address: $address")
+        Log.d(TAG, "DNS: $dns")
+        Log.d(TAG, "Endpoint: $endpoint")
+        Log.d(TAG, "AllowedIPs: $allowedIps")
+
         val iface = com.wireguard.config.Interface.Builder()
-            .parsePrivateKey(args["privateKey"] as String)
-            .parseAddresses(args["address"] as String)
-            .parseDnsServers(args["dns"] as String)
+            .parsePrivateKey(privateKey)
+            .parseAddresses(address)
+            .parseDnsServers(dns)
             .build()
 
         val peer = com.wireguard.config.Peer.Builder()
-            .parsePublicKey(args["peerPublicKey"] as String)
-            .parseEndpoint(args["endpoint"] as String)
-            .parseAllowedIPs(args["allowedIps"] as String)
-            .parsePersistentKeepalive(
-                (args["persistentKeepalive"] as Int).toString()
-            )
+            .parsePublicKey(peerPublicKey)
+            .parseEndpoint(endpoint)
+            .parseAllowedIPs(allowedIps)
+            .parsePersistentKeepalive(keepalive.toString())
             .build()
 
         return Config.Builder().setInterface(iface).addPeer(peer).build()
@@ -335,7 +347,6 @@ class MyVpnService : VpnService() {
                 ) == PackageManager.PERMISSION_GRANTED
                 if (!granted) {
                     Log.w(TAG, "POST_NOTIFICATIONS not granted — skipping notification update")
-                    // ✅ إرسال الخطأ إلى السجل ليظهر للمستخدم
                     VpnStateBus.emit("error", "تنبيه: صلاحية الإشعارات ممنوعة! اذهب لإعدادات الهاتف واسمح بها.")
                     return
                 }
