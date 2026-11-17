@@ -45,7 +45,6 @@ class MyVpnService : VpnService() {
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    // إذا كان التطبيق في المقدمة، startService كافٍ ولا يُوقف الـ Activity
                     if (isAppInForeground(ctx)) {
                         Log.d(TAG, "startService (app in foreground)")
                         ctx.startService(i)
@@ -119,9 +118,9 @@ class MyVpnService : VpnService() {
         instance = this
         isRunning = true
         createChannel()
-        // ✅ بدء الـ foreground فوراً — يمنع النظام من "إيقاف" التطبيق
         startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
-        Log.d(TAG, "startForeground called in onCreate")
+        // ✅ أرسل الحالة الأولية فوراً
+        VpnStateBus.emit("connecting", null, null)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -147,6 +146,7 @@ class MyVpnService : VpnService() {
         tunnel = null
         instance = null
         isRunning = false
+        VpnStateBus.emit("disconnected", null, null)
         stopForegroundCompat()
         super.onDestroy()
     }
@@ -156,7 +156,6 @@ class MyVpnService : VpnService() {
     // ------------------------------------------------------------------
 
     private fun handleConnectIntent(intent: Intent) {
-        // startForeground تم في onCreate — لا نكرره هنا
         val args = mutableMapOf<String, Any>()
         intent.extras?.keySet()?.forEach { k ->
             intent.extras?.get(k)?.let { v -> args[k] = v }
@@ -185,6 +184,7 @@ class MyVpnService : VpnService() {
                 VpnStateBus.emit("error", e.message ?: e.toString())
             } finally {
                 tunnel = null
+                VpnStateBus.emit("disconnected", null)
                 stopForegroundCompat()
                 stopSelf()
             }
@@ -238,6 +238,7 @@ class MyVpnService : VpnService() {
                 backend!!.setState(t, Tunnel.State.UP, cfg)
                 Log.i(TAG, "tunnel UP")
 
+                // WgTunnel.onStateChange(UP) يرسل "connected" مع configName
                 updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
@@ -335,18 +336,19 @@ class MyVpnService : VpnService() {
 // ------------------------------------------------------------------
 // WgTunnel
 // ------------------------------------------------------------------
-class WgTunnel(name: String = "myvpn") : Tunnel {
-    @Volatile private var _name: String = name
+class WgTunnel(
+    private val configName: String = "myvpn"
+) : Tunnel {
     @Volatile private var _state: Tunnel.State = Tunnel.State.DOWN
 
-    override fun getName(): String = _name
+    override fun getName(): String = configName
 
     override fun onStateChange(newState: Tunnel.State) {
         _state = newState
-        Log.d("VPN_TAG", "WgTunnel[$_name].onStateChange → $newState")
+        Log.d("VPN_TAG", "WgTunnel[$configName].onStateChange → $newState")
         when (newState) {
             Tunnel.State.UP ->
-                VpnStateBus.emit("connected", null, _name)
+                VpnStateBus.emit("connected", null, configName)
             Tunnel.State.DOWN ->
                 VpnStateBus.emit("disconnected", null)
             Tunnel.State.TOGGLE -> { /* غير مستخدم */ }
