@@ -108,11 +108,13 @@ class VpnController extends ChangeNotifier {
     }
 
     if (saved == null) {
-      log('connected but no saved session → synthesizing since=now',
+      // ✅ إذا كان الجسر متصلاً لكن لا توجد جلسة، استخدم الاسم من الحالة (وليس unknown إذا أمكن)
+      final name = s.activeConfigName ?? 'unknown';
+      log('connected but no saved session → synthesizing since=now ($name)',
           level: LogLevel.warn);
       await _session.save(
         since: DateTime.now(),
-        configName: s.activeConfigName ?? 'unknown',
+        configName: name,
       );
       notifyListeners();
       return;
@@ -122,7 +124,6 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// ✅ جديد: يطلب الحالة الحقيقية من الجسر عند العودة للتطبيق.
   Future<void> refreshState() async {
     log('refreshState requested');
     await bridge.refreshState();
@@ -177,8 +178,17 @@ class VpnController extends ChangeNotifier {
   Future<void> _persistSession() async {
     final s = state;
     if (s.status != VpnStatus.connected) return;
+
+    // ✅ الإصلاح: إذا كان الاسم مفقوداً، اقرأه من الجلسة المحفوظة مسبقاً
+    String name = s.activeConfigName ?? 'unknown';
+    if (name == 'unknown') {
+      final saved = await _session.load();
+      if (saved != null && saved.configName != 'unknown') {
+        name = saved.configName;
+      }
+    }
+
     final since = s.connectedSince ?? DateTime.now();
-    final name = s.activeConfigName ?? 'unknown';
     await _session.save(since: since, configName: name);
     log('session persisted ($name, since=$since)');
   }
