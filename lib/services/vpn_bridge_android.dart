@@ -28,18 +28,32 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<void> init() async {
     _eventSub = _events.receiveBroadcastStream().listen(
       _onNativeEvent,
-      onError: (e, st) {
-        _emitError('EventChannel error: $e');
-      },
+      onError: (e, st) => _emitError('EventChannel error: $e'),
       cancelOnError: false,
     );
+    // اطلب الحالة الحالية فوراً
+    await refreshState();
   }
 
-  /// Kotlin يرسل: {state, message, configName}
+  @override
+  Future<void> refreshState() async {
+    try {
+      final snapshot = await _channel.invokeMethod<Map>('getState');
+      if (snapshot != null) _onNativeEvent(snapshot);
+    } on PlatformException catch (e) {
+      // لا نُفشل — قد يكون getState غير مدعوم في نسخة قديمة
+    } on MissingPluginException {
+      // تجاهل
+    }
+  }
+
   void _onNativeEvent(dynamic event) {
     if (event is! Map) return;
-    final stateStr = event['state'] as String? ?? 'disconnected';
-    final message = event['message'] as String?;
+    // نقرأ من state أو status أيهما موجود (توافق)
+    final stateStr =
+        (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
+    final message =
+        (event['message'] as String?) ?? (event['error'] as String?);
     final configName = event['configName'] as String?;
 
     final status = _parseStatus(stateStr);
@@ -90,15 +104,12 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Future<bool> requestNotificationPermission() async {
     try {
-      // موجود في MainActivity المحدث
       return await _channel
               .invokeMethod<bool>('requestNotificationPermission') ??
           true;
     } on PlatformException {
-      // لا نُفشل الاتصال — الإشعار تحسين فقط
       return true;
     } on MissingPluginException {
-      // إصدار قديم من MainActivity لا يدعمها — تجاهل
       return true;
     }
   }
