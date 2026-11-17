@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../controllers/vpn_controller.dart';
-import '../models/vpn_log.dart';
+import '../main.dart';   // ← VpnController, VpnLog, LogLevel
 
 class LogsScreen extends StatelessWidget {
   const LogsScreen({super.key});
