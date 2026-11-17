@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../main.dart';   // ← VpnController, VpnLog, LogLevel
+import '../main.dart';   // VpnController, VpnLog, LogLevel
+import '../services/vpn_bridge_android.dart'; // للوصول إلى refreshState
 
 class LogsScreen extends StatelessWidget {
   const LogsScreen({super.key});
@@ -15,6 +16,19 @@ class LogsScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('سجل الاتصال'),
         actions: [
+          // ✅ زر تحديث السجل لسحب الأخطاء المخفية من Kotlin
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'تحديث السجل',
+            onPressed: () async {
+              await ctrl.refreshState();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم تحديث السجل')),
+                );
+              }
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.delete_sweep),
             tooltip: 'مسح السجل',
