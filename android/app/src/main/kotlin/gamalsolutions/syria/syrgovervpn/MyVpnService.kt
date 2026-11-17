@@ -248,10 +248,8 @@ class MyVpnService : VpnService() {
                     
                 } catch (e: Throwable) {
                     Log.e(TAG, "WireGuard setState(UP) FAILED", e)
-                    // ✅ إرسال الخطأ الحقيقي إلى شاشة السجل في التطبيق
                     VpnStateBus.emit("error", "فشل النفق: ${e.message}")
                     updateNotification("فشل الاتصال")
-                    // ❌ لا نستخدم stopSelf هنا، بل نترك الخدمة تعمل لحظياً حتى يُغلقها VpnController
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
@@ -281,7 +279,7 @@ class MyVpnService : VpnService() {
     }
 
     // ------------------------------------------------------------------
-    // Config (مع طباعة السجل لتشخيص الأخطاء)
+    // Config
     // ------------------------------------------------------------------
 
     private fun buildConfig(args: Map<String, Any>): Config {
@@ -341,24 +339,27 @@ class MyVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         try {
+            // التحقق من الصلاحية
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS
                 ) == PackageManager.PERMISSION_GRANTED
                 if (!granted) {
-                    Log.w(TAG, "POST_NOTIFICATIONS not granted — skipping notification update")
-                    VpnStateBus.emit("error", "تنبيه: صلاحية الإشعارات ممنوعة! اذهب لإعدادات الهاتف واسمح بها.")
+                    Log.w(TAG, "POST_NOTIFICATIONS not granted!")
+                    VpnStateBus.emit("error", "صلاحية الإشعارات ممنوعة! اذهب لإعدادات الهاتف واسمح بها.")
                     return
                 }
             }
-            Log.d(TAG, "updateNotification: $text")
-            val notification = buildNotification(text)
             
-            // ✅ إصلاح: استخدام startForeground لتحديث الإشعار بشكل قسري
-            startForeground(NOTIF_ID, notification)
+            Log.d(TAG, "تحديث الإشعار إلى: $text")
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val notification = buildNotification(text)
+
+            // ✅ استخدام notify مباشرة (أكثر فعالية من startForeground على بعض الأجهزة)
+            nm.notify(NOTIF_ID, notification)
             
         } catch (e: Exception) {
-            Log.w(TAG, "updateNotification failed", e)
+            Log.e(TAG, "فشل تحديث الإشعار", e)
             VpnStateBus.emit("error", "فشل تحديث الإشعار: ${e.message}")
         }
     }
