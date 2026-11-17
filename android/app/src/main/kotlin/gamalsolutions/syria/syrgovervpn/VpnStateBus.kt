@@ -14,15 +14,27 @@ object VpnStateBus {
 
     /**
      * snapshot() يقرأ الحالة الحقيقية:
-     * - إذا كانت الخدمة تعمل لكن _state = disconnected، نُعيد "connected"
-     * - هذا يضمن أن التطبيق لا يرى "غير متصل" بينما الإشعار يقول "متصل"
+     * - إذا كانت الخدمة تعمل لكن _state = connecting (لأن emit("connected") فشل)،
+     *   نُصححها إلى "connected".
+     * - إذا كانت الخدمة لا تعمل لكن _state != disconnected،
+     *   نُصححها إلى "disconnected".
+     * هذا يضمن أن Flutter لا يرى حالة معلقة أبداً.
      */
     fun snapshot(): Map<String, Any?> {
         val running = try { MyVpnService.isRunning } catch (_: Throwable) { false }
+        
         val actualState = when {
-            _state == "disconnected" && running -> "connected"
+            running && _state == "connecting" -> {
+                Log.w(TAG, "snapshot: correcting 'connecting' → 'connected' (isRunning=true)")
+                "connected"
+            }
+            !running && _state != "disconnected" -> {
+                Log.w(TAG, "snapshot: correcting '$_state' → 'disconnected' (isRunning=false)")
+                "disconnected"
+            }
             else -> _state
         }
+        
         Log.d(TAG, "VpnStateBus.snapshot: state=$actualState (raw=$_state) running=$running")
         return mapOf(
             "state" to actualState,
