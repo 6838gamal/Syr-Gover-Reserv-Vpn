@@ -34,6 +34,18 @@ jobs:
           channel: 'stable'
           cache: true
 
+      # ✅ استخدام pubspec_desktop.yaml كملف الاعتماديات الأساسي
+      - name: Use pubspec_desktop.yaml as pubspec.yaml
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "pubspec_desktop.yaml")) {
+            Write-Error "pubspec_desktop.yaml not found!"
+            exit 1
+          }
+          Copy-Item -Path "pubspec_desktop.yaml" -Destination "pubspec.yaml" -Force
+          Write-Host "--- pubspec.yaml (from pubspec_desktop.yaml) ---"
+          Get-Content pubspec.yaml
+
       - name: Get dependencies
         run: flutter pub get
 
