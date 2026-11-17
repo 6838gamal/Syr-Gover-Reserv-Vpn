@@ -1,125 +1,74 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+
+import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
+import 'package:flutter/services.dart' show PlatformException;
 
 import '../models/vpn_config.dart';
 import '../models/vpn_log.dart';
 import '../models/vpn_state.dart';
-import '../services/vpn_service.dart';
+import '../services/config_store.dart';
+import '../services/internet_check.dart';
 import '../services/session_persister.dart';
+import '../services/vpn_bridge.dart';
 
 class VpnController extends ChangeNotifier {
-  final VpnPlatformService _platform;
-  final ConfigStore store;
-  final SessionPersister _session;
+  final VpnBridge bridge;
+  final ConfigStore store = ConfigStore();
+  final SessionPersister _session = SessionPersister();
 
-  VpnState _state = const VpnState();
-  VpnState get state => _state;
-
-  bool autoReconnectEnabled = false;
+  StreamSubscription<VpnState>? _stateSub;
+  Timer? _networkWatchdog;
+  bool _wasConnectedBeforeOutage = false;
+  bool _autoReconnectEnabled = true;
 
   final List<VpnLog> _logs = [];
   List<VpnLog> get logs => List.unmodifiable(_logs);
 
-  StreamSubscription<NativeVpnEvent>? _sub;
-
-  VpnController({
-    required VpnPlatformService platform,
-    required this.store,
-    SessionPersister? session,
-  })  : _platform = platform,
-        _session = session ?? SessionPersister() {
-    _init();
+  VpnController(this.bridge) {
+    _stateSub = bridge.stateStream.listen(_onStateChanged);
+    _startNetworkWatchdog();
+    _bootstrap();
   }
 
-  Future<void> _init() async {
+  // ------------------------- Bootstrap -------------------------
+
+  Future<void> _bootstrap() async {
     log('controller initialized');
-    _sub = _platform.stateStream.listen(
-      _onNativeEvent,
-      onError: (e) => log('event stream error: $e', level: LogLevel.error),
-    );
     await restoreSession();
   }
 
-  // ---------------------- استعادة الجلسة ----------------------
-
-  /// تُستدعى عند بدء التطبيق. تتحقق من الطبقة الأصلية أولاً
-  /// حتى لا نعيد حالة "متصل" وهمية.
   Future<void> restoreSession() async {
     final saved = await _session.load();
-    final actuallyConnected = await _platform.isConnected();
+    final s = state;
 
-    if (!actuallyConnected) {
+    if (s.status != VpnStatus.connected) {
       if (saved != null) {
-        log('stale session found (not actually connected) → cleared',
+        log('stale session found (state=${s.status.name}) → cleared',
             level: LogLevel.warn);
         await _session.clear();
       }
-      _setState(const VpnState(status: VpnStatus.disconnected));
       return;
     }
 
     if (saved == null) {
-      // الطبقة الأصلية تقول متصل لكن لا جلسة محفوظة (حالة غير متوقعة)
-      log('native says connected but no saved session', level: LogLevel.warn);
-      _setState(const VpnState(
-        status: VpnStatus.connected,
-        connectedSince: null,
-      ));
+      log('connected but no saved session → synthesizing since=now',
+          level: LogLevel.warn);
+      await _session.save(
+        since: DateTime.now(),
+        configName: s.activeConfigName ?? 'unknown',
+      );
+      notifyListeners();
       return;
     }
 
     log('restored session: ${saved.configName} since ${saved.since}');
-    _setState(VpnState(
-      status: VpnStatus.connected,
-      activeConfigName: saved.configName,
-      connectedSince: saved.since,
-    ));
+    notifyListeners();
   }
 
-  // ---------------------- Event handling ----------------------
-
-  void _onNativeEvent(NativeVpnEvent ev) {
-    log('native → ${ev.state}${ev.message != null ? " (${ev.message})" : ""}');
-    switch (ev.state) {
-      case 'connected':
-        _setState(_state.toStatus(VpnStatus.connected));
-        _persistCurrentSession();
-        break;
-      case 'connecting':
-        _setState(_state.toStatus(VpnStatus.connecting));
-        break;
-      case 'disconnecting':
-        _setState(_state.toStatus(VpnStatus.disconnecting));
-        break;
-      case 'disconnected':
-        _setState(_state.toStatus(VpnStatus.disconnected));
-        _session.clear();
-        break;
-      case 'error':
-        _setState(_state.toStatus(VpnStatus.error, errorMessage: ev.message));
-        _session.clear();
-        break;
-    }
-  }
-
-  /// يحفظ الجلسة إن كانت الحالة متصلة.
-  Future<void> _persistCurrentSession() async {
-    if (_state.status == VpnStatus.connected &&
-        _state.connectedSince != null &&
-        _state.activeConfigName != null) {
-      await _session.save(
-        since: _state.connectedSince!,
-        configName: _state.activeConfigName!,
-      );
-      log('session persisted');
-    }
-  }
-
-  // ---------------------- Logging ----------------------
+  // ------------------------- Logs -------------------------
 
   void log(String message, {LogLevel level = LogLevel.info}) {
-    final entry = VpnLog(message, level: level);
-    _logs.add(entry);
+    _logs.add(VpnLog(message, level: level));
     if (_logs.length > 500) _logs.removeAt(0);
     final tag = switch (level) {
       LogLevel.info => 'INFO ',
@@ -135,81 +84,129 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _setState(VpnState s) {
-    _state = s;
+  // ------------------------- Getters -------------------------
+
+  VpnState get state => bridge.currentState;
+
+  bool get autoReconnectEnabled => _autoReconnectEnabled;
+  set autoReconnectEnabled(bool v) {
+    _autoReconnectEnabled = v;
+    log('autoReconnect = $v');
     notifyListeners();
   }
 
-  // ---------------------- Connect / Disconnect ----------------------
+  // ------------------------- State events -------------------------
 
-  Future<bool> connect(VpnConfig cfg) async {
-    log('connect requested: ${cfg.name} → ${cfg.endpoint}');
-    _setState(_state.toStatus(VpnStatus.connecting, activeConfigName: cfg.name));
+  void _onStateChanged(VpnState s) {
+    log('state → ${s.status.name}'
+        '${s.errorMessage != null ? " (${s.errorMessage})" : ""}');
+    if (s.status == VpnStatus.connected) {
+      _wasConnectedBeforeOutage = true;
+      _persistSession();
+    } else if (s.status == VpnStatus.disconnected ||
+        s.status == VpnStatus.error) {
+      _session.clear();
+    }
+    notifyListeners();
+  }
 
+  Future<void> _persistSession() async {
+    final s = state;
+    if (s.status != VpnStatus.connected) return;
+    final since = s.connectedSince ?? DateTime.now();
+    final name = s.activeConfigName ?? 'unknown';
+    await _session.save(since: since, configName: name);
+    log('session persisted ($name, since=$since)');
+  }
+
+  // ------------------------- Watchdog -------------------------
+
+  void _startNetworkWatchdog() {
+    _networkWatchdog?.cancel();
+    _networkWatchdog = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (!_autoReconnectEnabled) return;
+      if (state.status != VpnStatus.connected) return;
+      if (!_wasConnectedBeforeOutage) return;
+      final online = await hasInternet();
+      if (!online) return;
+      try {
+        await bridge.onNetworkChanged();
+      } catch (e) {
+        log('watchdog error: $e', level: LogLevel.error);
+      }
+    });
+  }
+
+  // ------------------------- Connect / Disconnect -------------------------
+
+  Future<bool> connect(VpnConfig config) async {
+    log('connect requested: ${config.name} → ${config.endpoint}');
+
+    // 1) صلاحية الإشعارات (لا نُفشل الاتصال إن رُفضت)
+    try {
+      final notifOk = await bridge.requestNotificationPermission()
+          .timeout(const Duration(seconds: 30));
+      log('notification permission: $notifOk');
+    } catch (e) {
+      log('notification permission error: $e', level: LogLevel.warn);
+    }
+
+    // 2) صلاحية VPN
+    log('checking VPN permission...');
     bool granted;
     try {
-      granted = await _platform.requestPermission()
+      granted = await bridge.requestPermission()
           .timeout(const Duration(seconds: 60));
     } catch (e) {
       log('permission error: $e', level: LogLevel.error);
-      _fail('permission error: $e');
       return false;
     }
     if (!granted) {
-      log('permission denied by user', level: LogLevel.warn);
-      _fail('تم رفض صلاحية VPN');
+      log('permission denied', level: LogLevel.warn);
       return false;
     }
     log('permission granted');
 
+    // 3) الاتصال
     log('starting tunnel...');
     try {
-      final ok = await _platform.connect(cfg)
-          .timeout(const Duration(seconds: 30), onTimeout: () {
-        log('connect timeout (30s)', level: LogLevel.error);
-        return false;
-      });
-      if (!ok) {
-        log('connect returned false', level: LogLevel.error);
-        _fail('فشل بدء النفق');
-        return false;
-      }
-      _setState(_state.toStatus(VpnStatus.connected, activeConfigName: cfg.name));
-      await _persistCurrentSession();
-      log('tunnel established');
+      await bridge.connect(config).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          log('connect timeout (30s)', level: LogLevel.error);
+          throw TimeoutException('connect timeout');
+        },
+      );
+      log('connect() returned');
       return true;
     } on PlatformException catch (e) {
       log('PlatformException: ${e.code} ${e.message}', level: LogLevel.error);
-      _fail('${e.code}: ${e.message ?? ''}');
+      return false;
+    } on TimeoutException {
       return false;
     } catch (e) {
       log('connect error: $e', level: LogLevel.error);
-      _fail(e.toString());
       return false;
     }
   }
 
   Future<void> disconnect() async {
     log('disconnect requested');
-    _setState(_state.toStatus(VpnStatus.disconnecting));
+    _wasConnectedBeforeOutage = false;
     try {
-      await _platform.disconnect().timeout(const Duration(seconds: 10));
+      await bridge.disconnect().timeout(const Duration(seconds: 10));
     } catch (e) {
       log('disconnect error: $e', level: LogLevel.error);
     }
-    _setState(_state.toStatus(VpnStatus.disconnected));
     await _session.clear();
     log('session cleared');
   }
 
-  void _fail(String msg) {
-    _setState(_state.toStatus(VpnStatus.error, errorMessage: msg));
-    _session.clear();
-  }
-
   @override
   void dispose() {
-    _sub?.cancel();
+    _networkWatchdog?.cancel();
+    _stateSub?.cancel();
+    bridge.dispose();
     super.dispose();
   }
 }
