@@ -199,18 +199,15 @@ class MyVpnService : VpnService() {
 
     private fun connect(args: Map<String, Any>) {
         lastArgs = args
-        // ✅ fallback: إذا كان configName مفقوداً، استخدم "default"
-        currentConfigName = args["configName"] as? String
-        if (currentConfigName == null) {
-            Log.w(TAG, "connect: configName missing in args, using 'default'")
-            currentConfigName = "default"
-        }
+        // ✅ الحل: اقرأ الاسم، وإذا لم يوجد استخدم اسم افتراضي
+        currentConfigName = args["configName"] as? String ?: "VPN Config"
 
         scope.launch {
             try {
                 VpnStateBus.emit("connecting", null, currentConfigName)
-                Log.d(TAG, "checking VPN permission via prepare()")
+                updateNotification("جارٍ الاتصال بـ $currentConfigName...") // ✅ تحديث الإشعار فوراً
 
+                Log.d(TAG, "checking VPN permission via prepare()")
                 if (prepare(this@MyVpnService) != null) {
                     Log.e(TAG, "prepare() returned non-null → permission missing")
                     VpnStateBus.emit("error", "صلاحية VPN مطلوبة")
@@ -239,15 +236,16 @@ class MyVpnService : VpnService() {
                     backend = GoBackend(this@MyVpnService)
                 }
 
-                val t = WgTunnel(currentConfigName ?: "default")
+                val t = WgTunnel(currentConfigName ?: "VPN Config")
                 tunnel = t
 
                 Log.d(TAG, "calling setState(UP)")
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
                     Log.i(TAG, "tunnel UP")
+                    // ✅ إرسال صريح — لا نعتمد على WgTunnel.onStateChange فقط
                     VpnStateBus.emit("connected", null, currentConfigName)
-                    updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
+                    updateNotification("متصل — $currentConfigName") // ✅ تحديث الإشعار
                 } catch (e: Throwable) {
                     Log.e(TAG, "setState(UP) failed", e)
                     VpnStateBus.emit("error", "فشل الاتصال: ${e.message}")
@@ -340,9 +338,9 @@ class MyVpnService : VpnService() {
                     return
                 }
             }
+            Log.d(TAG, "updateNotification: $text")
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(NOTIF_ID, buildNotification(text))
-            Log.d(TAG, "notification updated: $text")
         } catch (e: Exception) {
             Log.w(TAG, "updateNotification failed", e)
         }
@@ -362,7 +360,7 @@ class MyVpnService : VpnService() {
 // WgTunnel
 // ------------------------------------------------------------------
 class WgTunnel(
-    private val configName: String = "default"
+    private val configName: String = "VPN Config"
 ) : Tunnel {
     @Volatile private var _state: Tunnel.State = Tunnel.State.DOWN
 
