@@ -74,6 +74,9 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         Log.d(TAG, "configureFlutterEngine")
 
+        // ✅ تهيئة الذاكرة لالتقاط الأخطاء
+        VpnStateBus.init(this)
+
         MethodChannel(engine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
                 Log.d(TAG, "method call: ${call.method} args=${call.arguments}")
@@ -101,6 +104,11 @@ class MainActivity : FlutterActivity() {
                             val snapshot = VpnStateBus.snapshot()
                             Log.d(TAG, "getState → $snapshot")
                             result.success(snapshot)
+                        }
+                        "getPendingError" -> { // ✅ سحب الأخطاء المخزنة
+                            val err = VpnStateBus.consumePendingError()
+                            Log.d(TAG, "getPendingError → $err")
+                            result.success(err)
                         }
                         "requestNotificationPermission" ->
                             handleRequestNotification(result)
