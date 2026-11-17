@@ -15,7 +15,7 @@ import 'services/vpn_bridge.dart';
 import 'services/vpn_bridge_factory.dart';
 
 // =============================================================================
-// نماذج مساعدة (يمكن نقلها لاحقاً إلى ملفات منفصلة)
+// نماذج مساعدة
 // =============================================================================
 
 enum LogLevel { info, warn, error }
@@ -57,7 +57,10 @@ class SessionPersister {
     final ms = p.getInt(_kSince);
     final name = p.getString(_kConfig);
     if (ms == null || name == null) return null;
-    return (since: DateTime.fromMillisecondsSinceEpoch(ms), configName: name);
+    return (
+      since: DateTime.fromMillisecondsSinceEpoch(ms),
+      configName: name as String,
+    );
   }
 }
 
@@ -91,7 +94,6 @@ class VpnController extends ChangeNotifier {
     await restoreSession();
   }
 
-  /// يتحقق من الجلسة المحفوظة ويطابقها مع حالة الجسر.
   Future<void> restoreSession() async {
     final saved = await _session.load();
     final s = state;
@@ -118,6 +120,13 @@ class VpnController extends ChangeNotifier {
 
     log('restored session: ${saved.configName} since ${saved.since}');
     notifyListeners();
+  }
+
+  /// ✅ جديد: يطلب الحالة الحقيقية من الجسر عند العودة للتطبيق.
+  Future<void> refreshState() async {
+    log('refreshState requested');
+    await bridge.refreshState();
+    await restoreSession();
   }
 
   // ------------------------- Logs -------------------------
@@ -197,6 +206,16 @@ class VpnController extends ChangeNotifier {
   Future<bool> connect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
 
+    // 1) صلاحية الإشعارات (لا نُفشل الاتصال إن رُفضت)
+    try {
+      final notifOk = await bridge.requestNotificationPermission()
+          .timeout(const Duration(seconds: 30));
+      log('notification permission: $notifOk');
+    } catch (e) {
+      log('notification permission error: $e', level: LogLevel.warn);
+    }
+
+    // 2) صلاحية VPN
     log('checking VPN permission...');
     bool granted;
     try {
@@ -212,6 +231,7 @@ class VpnController extends ChangeNotifier {
     }
     log('permission granted');
 
+    // 3) الاتصال
     log('starting tunnel...');
     try {
       await bridge.connect(config).timeout(
