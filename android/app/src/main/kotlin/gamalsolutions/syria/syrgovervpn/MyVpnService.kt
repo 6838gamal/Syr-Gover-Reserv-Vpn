@@ -44,11 +44,20 @@ class MyVpnService : VpnService() {
                 }
             }
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    ctx.startForegroundService(i)
-                else ctx.startService(i)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    // إذا كان التطبيق في المقدمة، startService كافٍ ولا يُوقف الـ Activity
+                    if (isAppInForeground(ctx)) {
+                        Log.d(TAG, "startService (app in foreground)")
+                        ctx.startService(i)
+                    } else {
+                        Log.d(TAG, "startForegroundService (app in background)")
+                        ctx.startForegroundService(i)
+                    }
+                } else {
+                    ctx.startService(i)
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "startForegroundService failed", e)
+                Log.e(TAG, "service start failed", e)
                 VpnStateBus.emit("error", e.message ?: e.toString())
                 throw e
             }
@@ -77,6 +86,21 @@ class MyVpnService : VpnService() {
                 }
             } ?: Log.w(TAG, "kick called but service not running")
         }
+
+        private fun isAppInForeground(ctx: Context): Boolean {
+            return try {
+                val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                val processes = am.runningAppProcesses ?: return false
+                val myPid = android.os.Process.myPid()
+                val myUid = android.os.Process.myUid()
+                processes.any {
+                    it.pid == myPid && it.uid == myUid &&
+                        it.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     private var tunnel: WgTunnel? = null
@@ -85,12 +109,19 @@ class MyVpnService : VpnService() {
     private var currentConfigName: String? = null
     internal val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // ------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
         instance = this
         isRunning = true
         createChannel()
+        // ✅ بدء الـ foreground فوراً — يمنع النظام من "إيقاف" التطبيق
+        startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
+        Log.d(TAG, "startForeground called in onCreate")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -120,9 +151,12 @@ class MyVpnService : VpnService() {
         super.onDestroy()
     }
 
-    private fun handleConnectIntent(intent: Intent) {
-        startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
+    // ------------------------------------------------------------------
+    // Intent handlers
+    // ------------------------------------------------------------------
 
+    private fun handleConnectIntent(intent: Intent) {
+        // startForeground تم في onCreate — لا نكرره هنا
         val args = mutableMapOf<String, Any>()
         intent.extras?.keySet()?.forEach { k ->
             intent.extras?.get(k)?.let { v -> args[k] = v }
@@ -157,6 +191,10 @@ class MyVpnService : VpnService() {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Connect / reconnect
+    // ------------------------------------------------------------------
+
     private fun connect(args: Map<String, Any>) {
         lastArgs = args
         currentConfigName = args["configName"] as? String
@@ -175,7 +213,6 @@ class MyVpnService : VpnService() {
                 }
 
                 ConfigPersistence.saveLastConfig(this@MyVpnService, args)
-                // لا نفرض autostart تلقائياً — يُفعّله المستخدم من الإعدادات
 
                 Log.d(TAG, "building wireguard config")
                 val cfg = try {
@@ -201,7 +238,6 @@ class MyVpnService : VpnService() {
                 backend!!.setState(t, Tunnel.State.UP, cfg)
                 Log.i(TAG, "tunnel UP")
 
-                // لا نُرسل "connected" هنا — WgTunnel.onStateChange(UP) يفعله
                 updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
@@ -230,6 +266,10 @@ class MyVpnService : VpnService() {
         connect(args)
     }
 
+    // ------------------------------------------------------------------
+    // Config
+    // ------------------------------------------------------------------
+
     private fun buildConfig(args: Map<String, Any>): Config {
         val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(args["privateKey"] as String)
@@ -248,6 +288,10 @@ class MyVpnService : VpnService() {
 
         return Config.Builder().setInterface(iface).addPeer(peer).build()
     }
+
+    // ------------------------------------------------------------------
+    // Notification
+    // ------------------------------------------------------------------
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -288,6 +332,9 @@ class MyVpnService : VpnService() {
     }
 }
 
+// ------------------------------------------------------------------
+// WgTunnel
+// ------------------------------------------------------------------
 class WgTunnel(name: String = "myvpn") : Tunnel {
     @Volatile private var _name: String = name
     @Volatile private var _state: Tunnel.State = Tunnel.State.DOWN
