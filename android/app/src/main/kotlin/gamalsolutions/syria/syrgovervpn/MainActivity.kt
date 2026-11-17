@@ -10,44 +10,60 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterFragmentActivity   // ← تغيير
+import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterFragmentActivity() {              // ← تغيير
+class MainActivity : FlutterActivity() {
 
     companion object {
         private const val TAG = "VPN_TAG"
         private const val METHOD_CHANNEL = "com.example.myvpn/vpn"
         private const val EVENT_CHANNEL = "com.example.myvpn/vpn_events"
+        private const val REQUEST_VPN = 1001
+        private const val REQUEST_NOTIF = 1002
     }
 
-    // نتائج معلّقة
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var pendingNotifResult: MethodChannel.Result? = null
-
-    // sink محلي (مرآة لـ VpnStateBus.sink)
     private var eventSink: EventChannel.EventSink? = null
 
-    private val vpnPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val granted = result.resultCode == Activity.RESULT_OK
-        Log.d(TAG, "VPN permission result: granted=$granted")
-        pendingPermissionResult?.success(granted)
-        pendingPermissionResult = null
+    // ------------------------------------------------------------------
+    // Lifecycle logging
+    // ------------------------------------------------------------------
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        Log.d(TAG, "MainActivity.onCreate")
+        super.onCreate(savedInstanceState)
     }
 
-    private val notificationPermLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        Log.d(TAG, "POST_NOTIFICATIONS granted=$granted")
-        pendingNotifResult?.success(granted)
-        pendingNotifResult = null
+    override fun onStart() {
+        Log.d(TAG, "MainActivity.onStart")
+        super.onStart()
+    }
+
+    override fun onResume() {
+        Log.d(TAG, "MainActivity.onResume")
+        super.onResume()
+    }
+
+    override fun onPause() {
+        Log.d(TAG, "MainActivity.onPause")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        Log.d(TAG, "MainActivity.onStop")
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        Log.d(TAG, "MainActivity.onDestroy")
+        eventSink = null
+        super.onDestroy()
     }
 
     // ------------------------------------------------------------------
@@ -58,7 +74,6 @@ class MainActivity : FlutterFragmentActivity() {              // ← تغيير
         super.configureFlutterEngine(engine)
         Log.d(TAG, "configureFlutterEngine")
 
-        // ------------------------- MethodChannel -------------------------
         MethodChannel(engine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
                 Log.d(TAG, "method call: ${call.method} args=${call.arguments}")
@@ -106,7 +121,6 @@ class MainActivity : FlutterFragmentActivity() {              // ← تغيير
                 }
             }
 
-        // ------------------------- EventChannel -------------------------
         EventChannel(engine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
@@ -123,10 +137,34 @@ class MainActivity : FlutterFragmentActivity() {              // ← تغيير
             })
     }
 
-    override fun onDestroy() {
-        Log.d(TAG, "MainActivity.onDestroy")
-        eventSink = null
-        super.onDestroy()
+    // ------------------------------------------------------------------
+    // Permissions results
+    // ------------------------------------------------------------------
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_VPN) {
+            val granted = resultCode == Activity.RESULT_OK
+            Log.d(TAG, "VPN permission result: granted=$granted")
+            pendingPermissionResult?.success(granted)
+            pendingPermissionResult = null
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_NOTIF) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            Log.d(TAG, "POST_NOTIFICATIONS granted=$granted")
+            pendingNotifResult?.success(granted)
+            pendingNotifResult = null
+        }
     }
 
     // ============================================================
@@ -140,15 +178,16 @@ class MainActivity : FlutterFragmentActivity() {              // ← تغيير
             result.success(true)
             return
         }
-        Log.d(TAG, "requesting VPN permission via launcher")
         if (pendingPermissionResult != null) {
             Log.w(TAG, "prepare called while another permission request is pending")
             result.error("BUSY", "permission request already in flight", null)
             return
         }
+        Log.d(TAG, "requesting VPN permission")
         pendingPermissionResult = result
         try {
-            vpnPermissionLauncher.launch(intent)
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQUEST_VPN)
         } catch (e: Exception) {
             Log.e(TAG, "failed to launch permission intent", e)
             pendingPermissionResult = null
@@ -205,7 +244,11 @@ class MainActivity : FlutterFragmentActivity() {              // ← تغيير
         Log.d(TAG, "requesting POST_NOTIFICATIONS")
         pendingNotifResult = result
         try {
-            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            @Suppress("DEPRECATION")
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                REQUEST_NOTIF
+            )
         } catch (e: Exception) {
             Log.e(TAG, "failed to launch notification permission", e)
             pendingNotifResult = null
