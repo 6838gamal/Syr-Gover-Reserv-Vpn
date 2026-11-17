@@ -1,41 +1,32 @@
 package gamalsolutions.syria.syrgovervpn
 
+import android.content.Context
 import android.util.Log
 import io.flutter.plugin.common.EventChannel
 
 object VpnStateBus {
     private const val TAG = "VPN_TAG"
+    private const val PREFS_NAME = "vpn_state_prefs"
+    private const val KEY_LAST_ERROR = "last_error_message"
 
     var sink: EventChannel.EventSink? = null
+    private var appContext: Context? = null
 
     @Volatile private var _state: String = "disconnected"
     @Volatile private var _message: String? = null
     @Volatile private var _configName: String? = null
 
-    /**
-     * snapshot() يقرأ الحالة الحقيقية:
-     * - إذا كانت الخدمة تعمل لكن _state = connecting (لأن emit("connected") فشل)،
-     *   نُصححها إلى "connected".
-     * - إذا كانت الخدمة لا تعمل لكن _state != disconnected،
-     *   نُصححها إلى "disconnected".
-     * هذا يضمن أن Flutter لا يرى حالة معلقة أبداً.
-     */
+    fun init(ctx: Context) {
+        appContext = ctx.applicationContext
+    }
+
     fun snapshot(): Map<String, Any?> {
         val running = try { MyVpnService.isRunning } catch (_: Throwable) { false }
-        
         val actualState = when {
-            running && _state == "connecting" -> {
-                Log.w(TAG, "snapshot: correcting 'connecting' → 'connected' (isRunning=true)")
-                "connected"
-            }
-            !running && _state != "disconnected" -> {
-                Log.w(TAG, "snapshot: correcting '$_state' → 'disconnected' (isRunning=false)")
-                "disconnected"
-            }
+            running && _state == "connecting" -> "connected"
+            !running && _state != "disconnected" -> "disconnected"
             else -> _state
         }
-        
-        Log.d(TAG, "VpnStateBus.snapshot: state=$actualState (raw=$_state) running=$running")
         return mapOf(
             "state" to actualState,
             "status" to actualState,
@@ -46,7 +37,7 @@ object VpnStateBus {
     }
 
     fun emit(state: String, message: String? = null, configName: String? = null) {
-        Log.d(TAG, "VpnStateBus.emit: state=$state msg=$message config=$configName")
+        Log.d(TAG, "VpnStateBus.emit: state=$state msg=$message")
         _state = state
         _message = message
         if (configName != null) _configName = configName
@@ -54,10 +45,20 @@ object VpnStateBus {
             _configName = null
         }
         sink?.success(snapshot())
+        
+        // ✅ حفظ الأخطاء في الذاكرة ليقرأها Flutter لاحقاً
+        if (state == "error" && message != null) {
+            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                ?.edit()?.putString(KEY_LAST_ERROR, message)?.apply()
+        }
     }
 
-    @Deprecated("Use emit()", ReplaceWith("emit(status, error, configName)"))
-    fun set(status: String, error: String? = null, configName: String? = null) {
-        emit(status, error, configName)
+    fun consumePendingError(): String? {
+        val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return null
+        val err = prefs.getString(KEY_LAST_ERROR, null)
+        if (err != null) {
+            prefs.edit().remove(KEY_LAST_ERROR).apply() // امسحها بعد قراءتها
+        }
+        return err
     }
 }
