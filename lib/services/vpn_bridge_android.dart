@@ -1,7 +1,5 @@
 import 'dart:async';
-
 import 'package:flutter/services.dart';
-
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
@@ -13,8 +11,6 @@ class VpnBridgeAndroid implements VpnBridge {
   final _controller = StreamController<VpnState>.broadcast();
   VpnState _state = const VpnState();
   StreamSubscription? _eventSub;
-
-  // ✅ ذاكرة تخزين مؤقتة لاسم الإعدادات لضمان عدم ضياعه
   String? _lastKnownConfigName;
 
   @override
@@ -42,9 +38,19 @@ class VpnBridgeAndroid implements VpnBridge {
     try {
       final snapshot = await _channel.invokeMethod<Map>('getState');
       if (snapshot != null) _onNativeEvent(snapshot);
+      await _fetchPendingError(); // ✅ سحب الأخطاء من الذاكرة
     } on PlatformException {
       // تجاهل
     }
+  }
+
+  Future<void> _fetchPendingError() async {
+    try {
+      final err = await _channel.invokeMethod<String>('getPendingError');
+      if (err != null && err.isNotEmpty) {
+        _emitError(err);
+      }
+    } catch (_) {}
   }
 
   void _onNativeEvent(dynamic event) {
@@ -56,7 +62,6 @@ class VpnBridgeAndroid implements VpnBridge {
 
     final status = _parseStatus(stateStr);
     
-    // ✅ إذا وصلنا اسم جديد، احفظه
     if (configName != null && configName.isNotEmpty) {
       _lastKnownConfigName = configName;
     }
@@ -67,7 +72,6 @@ class VpnBridgeAndroid implements VpnBridge {
     _state = VpnState(
       status: status,
       errorMessage: status == VpnStatus.error ? (message ?? prev.errorMessage) : null,
-      // ✅ استخدم الاسم الجديد أو المحفوظ مسبقاً
       activeConfigName: (status == VpnStatus.disconnected) 
           ? null 
           : (configName ?? _lastKnownConfigName),
@@ -119,7 +123,6 @@ class VpnBridgeAndroid implements VpnBridge {
 
   @override
   Future<void> connect(VpnConfig config) async {
-    // ✅ حفظ الاسم فوراً قبل الإرسال لضمان عدم ضياعه
     _lastKnownConfigName = config.name;
     try {
       await _channel.invokeMethod('connect', config.toMap());
