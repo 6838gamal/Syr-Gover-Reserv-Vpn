@@ -85,10 +85,6 @@ class MyVpnService : VpnService() {
     private var currentConfigName: String? = null
     internal val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // ------------------------------------------------------------------
-    // Lifecycle
-    // ------------------------------------------------------------------
-
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
@@ -115,26 +111,18 @@ class MyVpnService : VpnService() {
         } catch (e: Throwable) {
             Log.w(TAG, "error bringing tunnel down on destroy", e)
         }
-        // لا نُلغي scope قبل إغلاق النفق — نُلغيه بعد
         scope.cancel()
         backend = null
         tunnel = null
         instance = null
         isRunning = false
-        VpnStateBus.emit("disconnected", null)
         stopForegroundCompat()
         super.onDestroy()
     }
 
-    // ------------------------------------------------------------------
-    // Intent handlers
-    // ------------------------------------------------------------------
-
     private fun handleConnectIntent(intent: Intent) {
-        // 1) foreground notification أولاً (إلزامي خلال 5 ثوان)
         startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
 
-        // 2) استخراج args
         val args = mutableMapOf<String, Any>()
         intent.extras?.keySet()?.forEach { k ->
             intent.extras?.get(k)?.let { v -> args[k] = v }
@@ -146,8 +134,6 @@ class MyVpnService : VpnService() {
             stopSelf()
             return
         }
-
-        // 3) بدء الاتصال في coroutine
         connect(args)
     }
 
@@ -165,23 +151,18 @@ class MyVpnService : VpnService() {
                 VpnStateBus.emit("error", e.message ?: e.toString())
             } finally {
                 tunnel = null
-                VpnStateBus.emit("disconnected", null)
                 stopForegroundCompat()
                 stopSelf()
             }
         }
     }
 
-    // ------------------------------------------------------------------
-    // Connect / reconnect
-    // ------------------------------------------------------------------
-
     private fun connect(args: Map<String, Any>) {
         lastArgs = args
         currentConfigName = args["configName"] as? String
         scope.launch {
             try {
-                VpnStateBus.emit("connecting", currentConfigName)
+                VpnStateBus.emit("connecting", null, currentConfigName)
                 Log.d(TAG, "checking VPN permission via prepare()")
 
                 if (prepare(this@MyVpnService) != null) {
@@ -194,7 +175,7 @@ class MyVpnService : VpnService() {
                 }
 
                 ConfigPersistence.saveLastConfig(this@MyVpnService, args)
-                ConfigPersistence.setAutostart(this@MyVpnService, true)
+                // لا نفرض autostart تلقائياً — يُفعّله المستخدم من الإعدادات
 
                 Log.d(TAG, "building wireguard config")
                 val cfg = try {
@@ -208,7 +189,6 @@ class MyVpnService : VpnService() {
                     return@launch
                 }
 
-                // إنشاء/إعادة استخدام Backend
                 if (backend == null) {
                     Log.d(TAG, "creating GoBackend")
                     backend = GoBackend(this@MyVpnService)
@@ -221,14 +201,12 @@ class MyVpnService : VpnService() {
                 backend!!.setState(t, Tunnel.State.UP, cfg)
                 Log.i(TAG, "tunnel UP")
 
-                VpnStateBus.emit("connected", currentConfigName)
+                // لا نُرسل "connected" هنا — WgTunnel.onStateChange(UP) يفعله
                 updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
                 VpnStateBus.emit("error", e.message ?: e.toString())
                 updateNotification("خطأ: ${e.message}")
-                // لا stopSelf هنا — نُبقي الإشعار ليرى المستخدم الخطأ
-                // لكن نُعيد الحالة إلى disconnected بعد إغلاق النفق
                 try {
                     tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
                 } catch (_: Throwable) {}
@@ -252,10 +230,6 @@ class MyVpnService : VpnService() {
         connect(args)
     }
 
-    // ------------------------------------------------------------------
-    // Config
-    // ------------------------------------------------------------------
-
     private fun buildConfig(args: Map<String, Any>): Config {
         val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(args["privateKey"] as String)
@@ -274,10 +248,6 @@ class MyVpnService : VpnService() {
 
         return Config.Builder().setInterface(iface).addPeer(peer).build()
     }
-
-    // ------------------------------------------------------------------
-    // Notification
-    // ------------------------------------------------------------------
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -318,9 +288,6 @@ class MyVpnService : VpnService() {
     }
 }
 
-// ------------------------------------------------------------------
-// WgTunnel
-// ------------------------------------------------------------------
 class WgTunnel(name: String = "myvpn") : Tunnel {
     @Volatile private var _name: String = name
     @Volatile private var _state: Tunnel.State = Tunnel.State.DOWN
@@ -331,9 +298,11 @@ class WgTunnel(name: String = "myvpn") : Tunnel {
         _state = newState
         Log.d("VPN_TAG", "WgTunnel[$_name].onStateChange → $newState")
         when (newState) {
-            Tunnel.State.UP -> VpnStateBus.emit("connected", _name)
-            Tunnel.State.DOWN -> VpnStateBus.emit("disconnected", null)
-            Tunnel.State.TOGGLE -> { /* غير مستخدم عملياً */ }
+            Tunnel.State.UP ->
+                VpnStateBus.emit("connected", null, _name)
+            Tunnel.State.DOWN ->
+                VpnStateBus.emit("disconnected", null)
+            Tunnel.State.TOGGLE -> { /* غير مستخدم */ }
         }
     }
 
