@@ -1,12 +1,15 @@
 package gamalsolutions.syria.syrgovervpn
 
+import android.Manifest
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
@@ -88,13 +91,13 @@ class MyVpnService : VpnService() {
 
         private fun isAppInForeground(ctx: Context): Boolean {
             return try {
-                val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                 val processes = am.runningAppProcesses ?: return false
                 val myPid = android.os.Process.myPid()
                 val myUid = android.os.Process.myUid()
                 processes.any {
                     it.pid == myPid && it.uid == myUid &&
-                        it.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                        it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
                 }
             } catch (_: Exception) {
                 false
@@ -196,7 +199,13 @@ class MyVpnService : VpnService() {
 
     private fun connect(args: Map<String, Any>) {
         lastArgs = args
+        // ✅ fallback: إذا كان configName مفقوداً، استخدم "default"
         currentConfigName = args["configName"] as? String
+        if (currentConfigName == null) {
+            Log.w(TAG, "connect: configName missing in args, using 'default'")
+            currentConfigName = "default"
+        }
+
         scope.launch {
             try {
                 VpnStateBus.emit("connecting", null, currentConfigName)
@@ -230,14 +239,13 @@ class MyVpnService : VpnService() {
                     backend = GoBackend(this@MyVpnService)
                 }
 
-                val t = WgTunnel(currentConfigName ?: "myvpn")
+                val t = WgTunnel(currentConfigName ?: "default")
                 tunnel = t
 
                 Log.d(TAG, "calling setState(UP)")
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
                     Log.i(TAG, "tunnel UP")
-                    // ✅ إرسال صريح — لا نعتمد على WgTunnel.onStateChange فقط
                     VpnStateBus.emit("connected", null, currentConfigName)
                     updateNotification("متصل${currentConfigName?.let { " — $it" } ?: ""}")
                 } catch (e: Throwable) {
@@ -322,8 +330,19 @@ class MyVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         try {
+            // ✅ تحقق من POST_NOTIFICATIONS على Android 13+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val granted = ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    Log.w(TAG, "POST_NOTIFICATIONS not granted — skipping notification update")
+                    return
+                }
+            }
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(NOTIF_ID, buildNotification(text))
+            Log.d(TAG, "notification updated: $text")
         } catch (e: Exception) {
             Log.w(TAG, "updateNotification failed", e)
         }
@@ -343,7 +362,7 @@ class MyVpnService : VpnService() {
 // WgTunnel
 // ------------------------------------------------------------------
 class WgTunnel(
-    private val configName: String = "myvpn"
+    private val configName: String = "default"
 ) : Tunnel {
     @Volatile private var _state: Tunnel.State = Tunnel.State.DOWN
 
