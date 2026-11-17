@@ -223,7 +223,7 @@ class MyVpnService : VpnService() {
                     buildConfig(args)
                 } catch (e: Throwable) {
                     Log.e(TAG, "buildConfig failed", e)
-                    VpnStateBus.emit("error", "config invalid: ${e.message}")
+                    VpnStateBus.emit("error", "إعدادات غير صالحة: ${e.message}")
                     updateNotification("إعدادات غير صالحة")
                     stopForegroundCompat()
                     stopSelf()
@@ -242,11 +242,14 @@ class MyVpnService : VpnService() {
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
                     Log.i(TAG, "tunnel UP successfully")
+                    
                     VpnStateBus.emit("connected", null, currentConfigName)
                     updateNotification("متصل — $currentConfigName")
+                    
                 } catch (e: Throwable) {
                     Log.e(TAG, "WireGuard setState(UP) FAILED", e)
-                    VpnStateBus.emit("error", "فشل الاتصال: ${e.message}")
+                    // ✅ إرسال الخطأ الحقيقي إلى شاشة السجل في التطبيق
+                    VpnStateBus.emit("error", "فشل النفق: ${e.message}")
                     updateNotification("فشل الاتصال")
                     stopSelf()
                 }
@@ -332,6 +335,8 @@ class MyVpnService : VpnService() {
                 ) == PackageManager.PERMISSION_GRANTED
                 if (!granted) {
                     Log.w(TAG, "POST_NOTIFICATIONS not granted — skipping notification update")
+                    // ✅ إرسال الخطأ إلى السجل ليظهر للمستخدم
+                    VpnStateBus.emit("error", "تنبيه: صلاحية الإشعارات ممنوعة! اذهب لإعدادات الهاتف واسمح بها.")
                     return
                 }
             }
@@ -343,6 +348,7 @@ class MyVpnService : VpnService() {
             
         } catch (e: Exception) {
             Log.w(TAG, "updateNotification failed", e)
+            VpnStateBus.emit("error", "فشل تحديث الإشعار: ${e.message}")
         }
     }
 
