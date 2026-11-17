@@ -65,6 +65,13 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// يطلب الحالة الحقيقية من الجسر (يُستدعى عند العودة للتطبيق)
+  Future<void> refreshState() async {
+    log('refreshState requested');
+    await bridge.refreshState();
+    await restoreSession();
+  }
+
   // ------------------------- Logs -------------------------
 
   void log(String message, {LogLevel level = LogLevel.info}) {
@@ -142,7 +149,6 @@ class VpnController extends ChangeNotifier {
   Future<bool> connect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
 
-    // 1) صلاحية الإشعارات (لا نُفشل الاتصال إن رُفضت)
     try {
       final notifOk = await bridge.requestNotificationPermission()
           .timeout(const Duration(seconds: 30));
@@ -151,7 +157,6 @@ class VpnController extends ChangeNotifier {
       log('notification permission error: $e', level: LogLevel.warn);
     }
 
-    // 2) صلاحية VPN
     log('checking VPN permission...');
     bool granted;
     try {
@@ -167,7 +172,6 @@ class VpnController extends ChangeNotifier {
     }
     log('permission granted');
 
-    // 3) الاتصال
     log('starting tunnel...');
     try {
       await bridge.connect(config).timeout(
