@@ -28,12 +28,18 @@ class VpnBridgeDesktop implements VpnBridge {
   Stream<VpnState> get stateStream => _controller.stream;
 
   // ------------------------------------------------------------------
-  // init
+  // init / refreshState
   // ------------------------------------------------------------------
 
   @override
   Future<void> init() async {
     _emit(const VpnState(status: VpnStatus.disconnected));
+  }
+
+  @override
+  Future<void> refreshState() async {
+    // سطح المكتب: لا توجد طبقة أصلية — أعد بث الحالة الحالية
+    _controller.add(_state);
   }
 
   // ------------------------------------------------------------------
@@ -48,7 +54,6 @@ class VpnBridgeDesktop implements VpnBridge {
             .timeout(const Duration(seconds: 3));
         return r.exitCode == 0;
       }
-      // Linux / macOS
       final r = await Process.run('which', ['wg-quick'])
           .timeout(const Duration(seconds: 3));
       return r.exitCode == 0;
@@ -89,7 +94,6 @@ class VpnBridgeDesktop implements VpnBridge {
       } else if (_isLinux) {
         exitCode = await _runLinuxConnect(_confPath!, config.name);
       } else {
-        // macOS
         exitCode = await _runMacConnect(_confPath!, config.name);
       }
 
@@ -116,18 +120,13 @@ class VpnBridgeDesktop implements VpnBridge {
     }
   }
 
-  // ------------------------- Windows -------------------------
-
   Future<int> _runWindowsConnect(String confPath) async {
-    // wireguard.exe /installtunnelservice يعمل كـ Windows Service
-    // ويعود فوراً بعد التثبيت. نتحقق من حالة الخدمة بعدها.
     final r = await Process.run(
       'wireguard.exe',
       ['/installtunnelservice', confPath],
     ).timeout(const Duration(seconds: 15));
     if (r.exitCode != 0) return r.exitCode;
 
-    // انتظر حتى تصبح الخدمة RUNNING
     final name = p.basenameWithoutExtension(confPath);
     for (var i = 0; i < 10; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
@@ -136,11 +135,7 @@ class VpnBridgeDesktop implements VpnBridge {
     return 1;
   }
 
-  // ------------------------- Linux -------------------------
-
   Future<int> _runLinuxConnect(String confPath, String name) async {
-    // 1) جرّب pkexec (غير تفاعلي إن وُجد)
-    // 2) وإلا استخدم sudo -n (non-interactive)
     final runners = <List<String>>[
       ['pkexec', 'wg-quick', 'up', confPath],
       ['sudo', '-n', 'wg-quick', 'up', confPath],
@@ -152,24 +147,17 @@ class VpnBridgeDesktop implements VpnBridge {
         final r = await Process.run(exe, args)
             .timeout(const Duration(seconds: 20));
         if (r.exitCode == 0) {
-          // تحقق إضافي من وجود الواجهة
           for (var i = 0; i < 6; i++) {
             await Future.delayed(const Duration(milliseconds: 500));
             if (await _isTunnelAlive(name)) return 0;
           }
         }
-      } catch (_) {
-        // جرّب التالي
-      }
+      } catch (_) {}
     }
     return 1;
   }
 
-  // ------------------------- macOS -------------------------
-
   Future<int> _runMacConnect(String confPath, String name) async {
-    // macOS: wg-quick موجود عبر brew install wireguard-tools
-    // يحتاج sudo أيضاً
     try {
       final r = await Process.run(
         'sudo',
@@ -183,10 +171,6 @@ class VpnBridgeDesktop implements VpnBridge {
     } catch (_) {}
     return 1;
   }
-
-  // ------------------------------------------------------------------
-  // watchdog
-  // ------------------------------------------------------------------
 
   void _startWatchdog(VpnConfig config) {
     _watchdog?.cancel();
@@ -214,7 +198,6 @@ class VpnBridgeDesktop implements VpnBridge {
         ).timeout(const Duration(seconds: 3));
         return r.stdout.toString().contains('RUNNING');
       }
-      // Linux / macOS
       final r = await Process.run('ip', ['link', 'show', name])
           .timeout(const Duration(seconds: 3));
       return r.exitCode == 0;
@@ -231,7 +214,6 @@ class VpnBridgeDesktop implements VpnBridge {
           ['/uninstalltunnelservice', name],
         ).timeout(const Duration(seconds: 10));
       } else if (_confPath != null) {
-        // جرّب pkexec ثم sudo -n
         final runners = <List<String>>[
           ['pkexec', 'wg-quick', 'down', _confPath!],
           ['sudo', '-n', 'wg-quick', 'down', _confPath!],
@@ -247,10 +229,6 @@ class VpnBridgeDesktop implements VpnBridge {
       }
     } catch (_) {}
   }
-
-  // ------------------------------------------------------------------
-  // disconnect / kick
-  // ------------------------------------------------------------------
 
   @override
   Future<void> disconnect() async {
@@ -299,10 +277,6 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<void> onNetworkChanged() async => kick();
-
-  // ------------------------------------------------------------------
-  // helpers / lifecycle
-  // ------------------------------------------------------------------
 
   void _emit(VpnState s) {
     _state = s;
