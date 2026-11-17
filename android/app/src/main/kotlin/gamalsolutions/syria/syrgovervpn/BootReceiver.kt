@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
-import android.os.Build
 import android.util.Log
 
 class BootReceiver : BroadcastReceiver() {
@@ -21,6 +20,12 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED,
             "android.intent.action.QUICKBOOT_POWERON",
             "com.htc.intent.action.QUICKBOOT_POWERON" -> {
+
+                // 0) إذا كان VPN يعمل بالفعل، لا حاجة لإعادة التشغيل
+                if (MyVpnService.isRunning) {
+                    Log.i(TAG, "VPN يعمل بالفعل — لا حاجة لإعادة التشغيل")
+                    return
+                }
 
                 // 1) Always-on VPN
                 val alwaysOn = intent.getBooleanExtra("alwaysOn", false)
@@ -47,7 +52,6 @@ class BootReceiver : BroadcastReceiver() {
                 val prepareIntent = VpnService.prepare(context)
                 if (prepareIntent != null) {
                     // على BOOT_COMPLETED لا يمكن عرض dialog الصلاحية
-                    // نُسجّل فقط — المستخدم يجب أن يفتح التطبيق ليمنحها
                     Log.w(TAG, "صلاحية VPN غير ممنوحة — لن يبدأ auto-start")
                     return
                 }
@@ -59,8 +63,7 @@ class BootReceiver : BroadcastReceiver() {
                     Log.i(TAG, "MyVpnService.start dispatched OK")
                 } catch (e: Exception) {
                     Log.e(TAG, "autostart failed", e)
-                    // على Android 12+ قد يظهر ForegroundServiceStartNotAllowedException
-                    // نُسجّل فقط — لا نستطيع فعل شيء في BOOT
+                    // ForegroundServiceStartNotAllowedException محتمل على Android 12+
                 }
             }
 
