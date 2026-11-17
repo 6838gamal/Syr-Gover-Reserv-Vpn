@@ -339,7 +339,6 @@ class MyVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         try {
-            // التحقق من الصلاحية
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS
@@ -355,8 +354,8 @@ class MyVpnService : VpnService() {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val notification = buildNotification(text)
 
-            // ✅ استخدام notify مباشرة (أكثر فعالية من startForeground على بعض الأجهزة)
-            nm.notify(NOTIF_ID, notification)
+            // ✅ إجبار النظام على تحديث الإشعار
+            startForeground(NOTIF_ID, notification)
             
         } catch (e: Exception) {
             Log.e(TAG, "فشل تحديث الإشعار", e)
