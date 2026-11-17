@@ -26,7 +26,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadConfigs());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadConfigs();
+      // ✅ مرة واحدة عند البدء: اطلب الحالة الحقيقية من Kotlin
+      if (mounted) {
+        await context.read<VpnController>().refreshState();
+      }
+    });
   }
 
   @override
@@ -37,27 +43,32 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      // يطلب الحالة الحقيقية من Kotlin (getState) ثم يزامن الجلسة
-      context.read<VpnController>().refreshState();
-    }
+    // ❌ لا نستدعي refreshState هنا — يسبب تكراراً في السجلات
+    // refreshState يُستدعى في initState وبعد connect فقط
   }
 
   Future<void> _loadConfigs() async {
     final ctrl = context.read<VpnController>();
-    final list = await ctrl.store.loadAll();
-    if (!mounted) return;
-    setState(() {
-      _configs = list;
-      if (_selected != null) {
-        final idx = list.indexWhere((c) => c.name == _selected!.name);
-        _selected =
-            idx >= 0 ? list[idx] : (list.isNotEmpty ? list.first : null);
-      } else {
-        _selected = list.isNotEmpty ? list.first : null;
-      }
-      _loading = false;
-    });
+    try {
+      final list = await ctrl.store.loadAll().timeout(
+            const Duration(seconds: 5),
+          );
+      if (!mounted) return;
+      setState(() {
+        _configs = list;
+        if (_selected != null) {
+          final idx = list.indexWhere((c) => c.name == _selected!.name);
+          _selected =
+              idx >= 0 ? list[idx] : (list.isNotEmpty ? list.first : null);
+        } else {
+          _selected = list.isNotEmpty ? list.first : null;
+        }
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   Future<void> _toggle() async {
