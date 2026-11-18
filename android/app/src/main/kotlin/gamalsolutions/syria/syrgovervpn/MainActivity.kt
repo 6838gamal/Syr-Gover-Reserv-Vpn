@@ -29,7 +29,6 @@ class MainActivity : FlutterActivity() {
 
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var pendingNotifResult: MethodChannel.Result? = null
-    private var eventSink: EventChannel.EventSink? = null
 
     // ------------------------------------------------------------------
     // Lifecycle logging
@@ -47,7 +46,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         Log.d(TAG, "MainActivity.onDestroy")
-        eventSink = null
+        // لا حاجة لتفريغ eventSink — VpnStateBus.sink يُدار عبر EventChannel
         super.onDestroy()
     }
 
@@ -74,7 +73,7 @@ class MainActivity : FlutterActivity() {
                         "disconnect" -> {
                             Log.d(TAG, "disconnect requested")
                             MyVpnService.stop(this)
-                            VpnStateBus.emit("disconnecting", null)
+                            // الخدمة ستُرسل "disconnecting" و "disconnected" عبر VpnStateBus
                             result.success(null)
                         }
                         "kick" -> {
@@ -98,7 +97,7 @@ class MainActivity : FlutterActivity() {
                             result.success(err)
                         }
 
-                        // ✅ جديد: سجل أخطاء الإشعارات
+                        // ✅ سجل أخطاء الإشعارات
                         "getNotificationErrorLog" -> {
                             val log = NotificationErrorLogger.readAll(this)
                             Log.d(TAG, "getNotificationErrorLog length=${log.length}")
@@ -130,7 +129,7 @@ class MainActivity : FlutterActivity() {
                 } catch (e: Exception) {
                     Log.e(TAG, "method ${call.method} failed", e)
                     NotificationErrorLogger.log(this, "MethodChannel/${call.method}", e)
-                    VpnStateBus.emit("error", e.message ?: e.toString())
+                    try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
                     result.error("METHOD_ERROR", e.message, null)
                 }
             }
@@ -139,13 +138,11 @@ class MainActivity : FlutterActivity() {
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
                     Log.d(TAG, "EventChannel onListen")
-                    eventSink = sink
                     VpnStateBus.sink = sink
                     sink?.success(VpnStateBus.snapshot())
                 }
                 override fun onCancel(args: Any?) {
                     Log.d(TAG, "EventChannel onCancel")
-                    eventSink = null
                     VpnStateBus.sink = null
                 }
             })
@@ -240,7 +237,7 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        // 2) ✅ فحص صلاحية الإشعارات قبل بدء الخدمة (Android 13+)
+        // 2) فحص صلاحية الإشعارات قبل بدء الخدمة (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val notifGranted = ContextCompat.checkSelfPermission(
                 this, Manifest.permission.POST_NOTIFICATIONS
@@ -260,13 +257,13 @@ class MainActivity : FlutterActivity() {
         }
 
         try {
-            VpnStateBus.emit("connecting", null)
+            // لا نرسل "connecting" هنا — MyVpnService.onCreate و connect يفعلان ذلك
             MyVpnService.start(this, args)
             result.success(null)
         } catch (e: Exception) {
             Log.e(TAG, "MyVpnService.start failed", e)
             NotificationErrorLogger.log(this, "handleConnect/MyVpnService.start", e)
-            VpnStateBus.emit("error", e.message ?: e.toString())
+            try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
             result.error("START_FAILED", e.message, null)
         }
     }
