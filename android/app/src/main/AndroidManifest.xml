@@ -10,6 +10,8 @@
     <!-- الخدمة في المقدمة (VPN) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- احتياط لبعض أجهزة Android 14 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!-- الإشعارات (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -31,7 +33,8 @@
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true">
 
         <!-- إلزامي لـ Flutter embedding v2 -->
         <meta-data
@@ -65,8 +68,9 @@
             android:name=".MyVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:stopWithTask="false">
+            android:foregroundServiceType="specialUse|connectedDevice"
+            android:stopWithTask="false"
+            android:directBootAware="false">
 
             <intent-filter>
                 <action android:name="android.net.VpnService" />
@@ -88,7 +92,8 @@
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="false"
+            android:directBootAware="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
