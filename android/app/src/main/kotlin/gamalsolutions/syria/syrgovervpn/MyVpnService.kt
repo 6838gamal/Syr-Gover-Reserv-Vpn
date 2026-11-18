@@ -17,12 +17,12 @@ import com.wireguard.config.Config
 import kotlinx.coroutines.*
 
 // ==================================================================
-// NotificationErrorLogger — سجل أخطاء دائم للإشعارات
+// NotificationErrorLogger
 // ==================================================================
 object NotificationErrorLogger {
     private const val TAG = "NOTIF_LOG"
     private const val FILE_NAME = "notification_errors.log"
-    private const val MAX_SIZE = 512 * 1024 // 512KB
+    private const val MAX_SIZE = 512 * 1024
 
     private val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
 
@@ -35,15 +35,11 @@ object NotificationErrorLogger {
             error?.stackTraceToString()?.let { append("\n").append(it) }
         }
         Log.e(TAG, msg, error)
-
-        // 1) ملف دائم
         try {
             val f = java.io.File(context.filesDir, FILE_NAME)
             if (f.exists() && f.length() > MAX_SIZE) f.delete()
             f.appendText(msg + "\n")
         } catch (_: Throwable) {}
-
-        // 2) بث للحالة (إن وُجد مستمع)
         try { VpnStateBus.emit("notification_error", msg) } catch (_: Throwable) {}
     }
 
@@ -175,19 +171,32 @@ class MyVpnService : VpnService() {
         } catch (e: Throwable) {
             NotificationErrorLogger.log(this, "onCreate/startForeground", e)
             try { VpnStateBus.emit("error", "فشل بدء الإشعار: ${e.message}") } catch (_: Throwable) {}
-            // لا نُسقط الخدمة، لكن نُعلم المستخدم
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand action=${intent?.action}")
-        when (intent?.action) {
+
+        // ✅ معالجة إعادة التشغيل بواسطة START_STICKY أو Always-On VPN
+        if (intent == null) {
+            Log.w(TAG, "Restarted by system (START_STICKY/Always-On) — attempting auto-reconnect")
+            attemptAutoReconnect()
+            return START_STICKY
+        }
+
+        when (intent.action) {
             ACTION_CONNECT -> handleConnectIntent(intent)
             ACTION_DISCONNECT -> handleDisconnectIntent()
             ACTION_KICK -> kick()
-            else -> Log.w(TAG, "unknown action: ${intent?.action}")
+            else -> Log.w(TAG, "unknown action: ${intent.action}")
         }
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.w(TAG, "onTaskRemoved — app swiped from recents")
+        NotificationErrorLogger.log(this, "onTaskRemoved", null, "app removed from recents")
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
@@ -203,12 +212,41 @@ class MyVpnService : VpnService() {
         tunnel = null
         instance = null
         isRunning = false
-
-        // ✅ إعادة تعيين الحالة في VpnStateBus
         try { VpnStateBus.reset() } catch (_: Throwable) {}
-
         stopForegroundCompat()
         super.onDestroy()
+    }
+
+    // ------------------------------------------------------------------
+    // Auto-reconnect (START_STICKY / Always-On)
+    // ------------------------------------------------------------------
+
+    private fun attemptAutoReconnect() {
+        val savedConfig = try {
+            ConfigPersistence.loadLastConfig(this)
+        } catch (e: Throwable) {
+            NotificationErrorLogger.log(this, "autoReconnect/loadConfig", e)
+            null
+        }
+
+        if (savedConfig == null) {
+            Log.w(TAG, "autoReconnect: no saved config")
+            NotificationErrorLogger.log(this, "autoReconnect", null, "no saved config")
+            stopForegroundCompat()
+            stopSelf()
+            return
+        }
+
+        if (prepare(this) != null) {
+            Log.w(TAG, "autoReconnect: VPN permission missing")
+            NotificationErrorLogger.log(this, "autoReconnect", null, "VPN permission missing")
+            stopForegroundCompat()
+            stopSelf()
+            return
+        }
+
+        Log.i(TAG, "autoReconnect: reconnecting with saved config")
+        connect(savedConfig)
     }
 
     // ------------------------------------------------------------------
@@ -308,10 +346,8 @@ class MyVpnService : VpnService() {
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
                     Log.i(TAG, "tunnel UP successfully")
-
                     try { VpnStateBus.emit("connected", null, currentConfigName) } catch (_: Throwable) {}
                     updateNotification("متصل — $currentConfigName")
-
                 } catch (e: Throwable) {
                     Log.e(TAG, "WireGuard setState(UP) FAILED", e)
                     NotificationErrorLogger.log(this@MyVpnService, "connect/setStateUp", e, "config=$currentConfigName")
@@ -368,7 +404,6 @@ class MyVpnService : VpnService() {
         val endpoint = req("endpoint")
         val allowedIps = req("allowedIps")
 
-        // ✅ مرن مع Int / Long / Double / String
         val keepalive: Int = when (val v = args["persistentKeepalive"]) {
             is Int -> v
             is Long -> v.toInt()
@@ -379,7 +414,6 @@ class MyVpnService : VpnService() {
             else -> throw IllegalArgumentException("unexpected keepalive type: ${v::class}")
         }
 
-        // ✅ MTU (كان مفقوداً — افتراضي 1280 إن لم يُمرر)
         val mtu: Int = when (val v = args["mtu"]) {
             is Int -> v
             is Long -> v.toInt()
@@ -464,7 +498,6 @@ class MyVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         try {
-            // 1) فحص صلاحية POST_NOTIFICATIONS على Android 13+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS
@@ -482,11 +515,9 @@ class MyVpnService : VpnService() {
                 }
             }
 
-            // 2) التحديث عبر notify() بدلاً من startForeground()
             Log.d(TAG, "تحديث الإشعار إلى: $text")
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(NOTIF_ID, buildNotification(text))
-
         } catch (e: Throwable) {
             Log.e(TAG, "فشل تحديث الإشعار", e)
             NotificationErrorLogger.log(this, "updateNotification", e, "text=$text")
@@ -523,11 +554,9 @@ class WgTunnel(
         Log.d("VPN_TAG", "WgTunnel[$configName].onStateChange → $newState")
         try {
             when (newState) {
-                Tunnel.State.UP ->
-                    VpnStateBus.emit("connected", null, configName)
-                Tunnel.State.DOWN ->
-                    VpnStateBus.emit("disconnected", null)
-                Tunnel.State.TOGGLE -> { /* غير مستخدم */ }
+                Tunnel.State.UP -> VpnStateBus.emit("connected", null, configName)
+                Tunnel.State.DOWN -> VpnStateBus.emit("disconnected", null)
+                Tunnel.State.TOGGLE -> { }
             }
         } catch (_: Throwable) {}
     }
