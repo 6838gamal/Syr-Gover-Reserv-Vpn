@@ -116,7 +116,6 @@ class VpnConfig {
         privateKey: j['privateKey'] as String,
         address: j['address'] as String,
         dns: j['dns'] as String,
-        // tolerant casting: قد يكون int/double/String من نسخ قديمة
         mtu: _asInt(j['mtu']) ?? 1280,
         peerPublicKey: j['peerPublicKey'] as String,
         endpoint: j['endpoint'] as String,
@@ -137,21 +136,30 @@ class VpnConfig {
   // toMap (لإرسالها عبر MethodChannel إلى Kotlin)
   // ------------------------------------------------------------------
 
-  /// المفاتيح هنا **يجب** أن تطابق ما يتوقعه `MyVpnService.buildConfig`:
-  /// configName, privateKey, address, dns, mtu, peerPublicKey, endpoint,
-  /// allowedIps, persistentKeepalive
+  /// المفاتيح هنا **يجب** أن تطابق ما يتوقعه `MyVpnService.buildConfig`.
+  ///
+  /// ⚠️ لا تحذف '=' من المفاتيح — مفاتيح WireGuard هي Base64
+  /// وقد تنتهي بـ '=' (padding). حذفها يجعلها غير صالحة.
   Map<String, dynamic> toMap() => {
         'configName': name,
-        // WireGuard يرفض المفاتيح مع '='
-        'privateKey': privateKey.replaceAll('=', '').trim(),
-        'address': address,
-        'dns': dns,
+        'privateKey': privateKey.trim(),
+        'address': address.trim(),
+        'dns': dns.trim(),
         'mtu': mtu,
-        'peerPublicKey': peerPublicKey.replaceAll('=', '').trim(),
-        'endpoint': endpoint,
-        'allowedIps': allowedIps,
+        'peerPublicKey': peerPublicKey.trim(),
+        'endpoint': endpoint.trim(),
+        'allowedIps': _normalizeAllowedIps(allowedIps),
         'persistentKeepalive': persistentKeepalive,
       };
+
+  /// ينظف allowedIps: يفصل بـ ',' ويضيف مسافة بعد كل فاصلة
+  static String _normalizeAllowedIps(String raw) {
+    return raw
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .join(', ');
+  }
 
   // ------------------------------------------------------------------
   // toConf (Desktop)
