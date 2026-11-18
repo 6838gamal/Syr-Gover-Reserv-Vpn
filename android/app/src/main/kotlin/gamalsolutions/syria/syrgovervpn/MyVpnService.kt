@@ -5,6 +5,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
@@ -15,6 +16,49 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import kotlinx.coroutines.*
 
+// ==================================================================
+// NotificationErrorLogger — سجل أخطاء دائم للإشعارات
+// ==================================================================
+object NotificationErrorLogger {
+    private const val TAG = "NOTIF_LOG"
+    private const val FILE_NAME = "notification_errors.log"
+    private const val MAX_SIZE = 512 * 1024 // 512KB
+
+    private val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+
+    fun log(context: Context, stage: String, error: Throwable? = null, extra: String? = null) {
+        val msg = buildString {
+            append("[${fmt.format(java.util.Date())}]")
+            append(" [$stage] ")
+            append(error?.message ?: "no-exception")
+            if (!extra.isNullOrBlank()) append(" | ").append(extra)
+            error?.stackTraceToString()?.let { append("\n").append(it) }
+        }
+        Log.e(TAG, msg, error)
+
+        // 1) ملف دائم
+        try {
+            val f = java.io.File(context.filesDir, FILE_NAME)
+            if (f.exists() && f.length() > MAX_SIZE) f.delete()
+            f.appendText(msg + "\n")
+        } catch (_: Throwable) {}
+
+        // 2) بث للحالة (إن وُجد مستمع)
+        try { VpnStateBus.emit("notification_error", msg) } catch (_: Throwable) {}
+    }
+
+    fun readAll(context: Context): String = try {
+        java.io.File(context.filesDir, FILE_NAME).readText()
+    } catch (_: Throwable) { "" }
+
+    fun clear(context: Context) {
+        try { java.io.File(context.filesDir, FILE_NAME).delete() } catch (_: Throwable) {}
+    }
+}
+
+// ==================================================================
+// MyVpnService
+// ==================================================================
 class MyVpnService : VpnService() {
 
     companion object {
@@ -60,7 +104,8 @@ class MyVpnService : VpnService() {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "service start failed", e)
-                VpnStateBus.emit("error", e.message ?: e.toString())
+                NotificationErrorLogger.log(ctx, "start/startService", e)
+                try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
                 throw e
             }
         }
@@ -73,6 +118,7 @@ class MyVpnService : VpnService() {
                 })
             } catch (e: Exception) {
                 Log.e(TAG, "stop failed", e)
+                NotificationErrorLogger.log(ctx, "stop/startService", e)
             }
         }
 
@@ -83,7 +129,8 @@ class MyVpnService : VpnService() {
                     try { svc.reconnect() }
                     catch (e: Throwable) {
                         Log.e(TAG, "kick reconnect failed", e)
-                        VpnStateBus.emit("error", e.message ?: e.toString())
+                        NotificationErrorLogger.log(svc, "kick/reconnect", e)
+                        try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
                     }
                 }
             } ?: Log.w(TAG, "kick called but service not running")
@@ -120,9 +167,16 @@ class MyVpnService : VpnService() {
         Log.d(TAG, "onCreate")
         instance = this
         isRunning = true
-        createChannel()
-        startForeground(NOTIF_ID, buildNotification("جارٍ الاتصال..."))
-        VpnStateBus.emit("connecting", null, null)
+
+        try {
+            createChannel()
+            startForegroundSafe(buildNotification("جارٍ الاتصال..."))
+            try { VpnStateBus.emit("connecting", null, null) } catch (_: Throwable) {}
+        } catch (e: Throwable) {
+            NotificationErrorLogger.log(this, "onCreate/startForeground", e)
+            try { VpnStateBus.emit("error", "فشل بدء الإشعار: ${e.message}") } catch (_: Throwable) {}
+            // لا نُسقط الخدمة، لكن نُعلم المستخدم
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -142,13 +196,14 @@ class MyVpnService : VpnService() {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (e: Throwable) {
             Log.w(TAG, "error bringing tunnel down on destroy", e)
+            NotificationErrorLogger.log(this, "onDestroy/setStateDown", e)
         }
         scope.cancel()
         backend = null
         tunnel = null
         instance = null
         isRunning = false
-        VpnStateBus.emit("disconnected", null, null)
+        try { VpnStateBus.emit("disconnected", null, null) } catch (_: Throwable) {}
         stopForegroundCompat()
         super.onDestroy()
     }
@@ -164,7 +219,8 @@ class MyVpnService : VpnService() {
         }
         if (args.isEmpty()) {
             Log.e(TAG, "connect intent with no args")
-            VpnStateBus.emit("error", "no config args")
+            NotificationErrorLogger.log(this, "handleConnectIntent/emptyArgs", null, "no extras")
+            try { VpnStateBus.emit("error", "no config args") } catch (_: Throwable) {}
             stopForegroundCompat()
             stopSelf()
             return
@@ -174,7 +230,7 @@ class MyVpnService : VpnService() {
 
     private fun handleDisconnectIntent() {
         Log.d(TAG, "handling disconnect")
-        VpnStateBus.emit("disconnecting", null)
+        try { VpnStateBus.emit("disconnecting", null) } catch (_: Throwable) {}
         scope.launch {
             try {
                 tunnel?.let { t ->
@@ -183,10 +239,11 @@ class MyVpnService : VpnService() {
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "disconnect setState failed", e)
-                VpnStateBus.emit("error", e.message ?: e.toString())
+                NotificationErrorLogger.log(this@MyVpnService, "disconnect/setStateDown", e)
+                try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
             } finally {
                 tunnel = null
-                VpnStateBus.emit("disconnected", null)
+                try { VpnStateBus.emit("disconnected", null) } catch (_: Throwable) {}
                 stopForegroundCompat()
                 stopSelf()
             }
@@ -203,27 +260,33 @@ class MyVpnService : VpnService() {
 
         scope.launch {
             try {
-                VpnStateBus.emit("connecting", null, currentConfigName)
+                try { VpnStateBus.emit("connecting", null, currentConfigName) } catch (_: Throwable) {}
                 updateNotification("جارٍ الاتصال بـ $currentConfigName...")
 
                 Log.d(TAG, "checking VPN permission via prepare()")
                 if (prepare(this@MyVpnService) != null) {
                     Log.e(TAG, "prepare() returned non-null → permission missing")
-                    VpnStateBus.emit("error", "صلاحية VPN مطلوبة")
+                    NotificationErrorLogger.log(this@MyVpnService, "connect/prepare", null, "VPN permission missing")
+                    try { VpnStateBus.emit("error", "صلاحية VPN مطلوبة") } catch (_: Throwable) {}
                     updateNotification("صلاحية VPN مطلوبة")
                     stopForegroundCompat()
                     stopSelf()
                     return@launch
                 }
 
-                ConfigPersistence.saveLastConfig(this@MyVpnService, args)
+                try {
+                    ConfigPersistence.saveLastConfig(this@MyVpnService, args)
+                } catch (e: Throwable) {
+                    NotificationErrorLogger.log(this@MyVpnService, "connect/saveLastConfig", e)
+                }
 
                 Log.d(TAG, "building wireguard config")
                 val cfg = try {
                     buildConfig(args)
                 } catch (e: Throwable) {
                     Log.e(TAG, "buildConfig failed", e)
-                    VpnStateBus.emit("error", "إعدادات غير صالحة: ${e.message}")
+                    NotificationErrorLogger.log(this@MyVpnService, "connect/buildConfig", e, "args=${args.keys}")
+                    try { VpnStateBus.emit("error", "إعدادات غير صالحة: ${e.message}") } catch (_: Throwable) {}
                     updateNotification("إعدادات غير صالحة")
                     stopForegroundCompat()
                     stopSelf()
@@ -242,18 +305,20 @@ class MyVpnService : VpnService() {
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
                     Log.i(TAG, "tunnel UP successfully")
-                    
-                    VpnStateBus.emit("connected", null, currentConfigName)
+
+                    try { VpnStateBus.emit("connected", null, currentConfigName) } catch (_: Throwable) {}
                     updateNotification("متصل — $currentConfigName")
-                    
+
                 } catch (e: Throwable) {
                     Log.e(TAG, "WireGuard setState(UP) FAILED", e)
-                    VpnStateBus.emit("error", "فشل النفق: ${e.message}")
+                    NotificationErrorLogger.log(this@MyVpnService, "connect/setStateUp", e, "config=$currentConfigName")
+                    try { VpnStateBus.emit("error", "فشل النفق: ${e.message}") } catch (_: Throwable) {}
                     updateNotification("فشل الاتصال")
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
-                VpnStateBus.emit("error", e.message ?: e.toString())
+                NotificationErrorLogger.log(this@MyVpnService, "connect/outer", e)
+                try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
                 updateNotification("خطأ: ${e.message}")
                 try {
                     tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
@@ -267,12 +332,14 @@ class MyVpnService : VpnService() {
         Log.d(TAG, "reconnect()")
         val args = lastArgs ?: run {
             Log.w(TAG, "reconnect: no lastArgs")
+            NotificationErrorLogger.log(this, "reconnect", null, "no lastArgs")
             return
         }
         try {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (e: Throwable) {
             Log.w(TAG, "reconnect: down failed", e)
+            NotificationErrorLogger.log(this, "reconnect/setStateDown", e)
         }
         tunnel = null
         connect(args)
@@ -284,18 +351,27 @@ class MyVpnService : VpnService() {
 
     private fun buildConfig(args: Map<String, Any>): Config {
         Log.d(TAG, "بناء إعدادات WireGuard...")
-        val privateKey = (args["privateKey"] as String).trim()
-        val address = (args["address"] as String).trim()
-        val dns = (args["dns"] as String).trim()
-        val peerPublicKey = (args["peerPublicKey"] as String).trim()
-        val endpoint = (args["endpoint"] as String).trim()
-        val allowedIps = (args["allowedIps"] as String).trim()
-        val keepalive = (args["persistentKeepalive"] as Int)
+
+        fun req(key: String): String {
+            val v = args[key] as? String
+            if (v.isNullOrBlank()) throw IllegalArgumentException("missing/empty: $key")
+            return v.trim()
+        }
+
+        val privateKey = req("privateKey")
+        val address = req("address")
+        val dns = req("dns")
+        val peerPublicKey = req("peerPublicKey")
+        val endpoint = req("endpoint")
+        val allowedIps = req("allowedIps")
+        val keepalive = (args["persistentKeepalive"] as? Int)
+            ?: throw IllegalArgumentException("missing: persistentKeepalive")
 
         Log.d(TAG, "Address: $address")
         Log.d(TAG, "DNS: $dns")
         Log.d(TAG, "Endpoint: $endpoint")
         Log.d(TAG, "AllowedIPs: $allowedIps")
+        Log.d(TAG, "Keepalive: $keepalive")
 
         val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(privateKey)
@@ -320,8 +396,13 @@ class MyVpnService : VpnService() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(
-                CHANNEL_ID, "VPN", NotificationManager.IMPORTANCE_LOW
-            )
+                CHANNEL_ID, "VPN Status", NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "حالة اتصال VPN"
+                setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
+            }
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(ch)
         }
@@ -334,41 +415,71 @@ class MyVpnService : VpnService() {
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
+    }
+
+    private fun startForegroundSafe(n: Notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID,
+                    n,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIF_ID, n)
+            }
+        } catch (e: Throwable) {
+            NotificationErrorLogger.log(this, "startForegroundSafe", e, "sdk=${Build.VERSION.SDK_INT}")
+            throw e
+        }
     }
 
     private fun updateNotification(text: String) {
         try {
+            // 1) فحص صلاحية POST_NOTIFICATIONS على Android 13+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS
                 ) == PackageManager.PERMISSION_GRANTED
                 if (!granted) {
                     Log.w(TAG, "POST_NOTIFICATIONS not granted!")
-                    VpnStateBus.emit("error", "صلاحية الإشعارات ممنوعة! اذهب لإعدادات الهاتف واسمح بها.")
+                    NotificationErrorLogger.log(
+                        this, "updateNotification/permission", null,
+                        "POST_NOTIFICATIONS not granted"
+                    )
+                    try {
+                        VpnStateBus.emit("error", "صلاحية الإشعارات ممنوعة! اذهب لإعدادات الهاتف واسمح بها.")
+                    } catch (_: Throwable) {}
                     return
                 }
             }
-            
+
+            // 2) التحديث عبر notify() بدلاً من startForeground()
             Log.d(TAG, "تحديث الإشعار إلى: $text")
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            val notification = buildNotification(text)
+            nm.notify(NOTIF_ID, buildNotification(text))
 
-            // ✅ إجبار النظام على تحديث الإشعار
-            startForeground(NOTIF_ID, notification)
-            
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "فشل تحديث الإشعار", e)
-            VpnStateBus.emit("error", "فشل تحديث الإشعار: ${e.message}")
+            NotificationErrorLogger.log(this, "updateNotification", e, "text=$text")
+            try { VpnStateBus.emit("error", "فشل تحديث الإشعار: ${e.message}") } catch (_: Throwable) {}
         }
     }
 
     private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Throwable) {
+            NotificationErrorLogger.log(this, "stopForegroundCompat", e)
         }
     }
 }
@@ -386,13 +497,15 @@ class WgTunnel(
     override fun onStateChange(newState: Tunnel.State) {
         _state = newState
         Log.d("VPN_TAG", "WgTunnel[$configName].onStateChange → $newState")
-        when (newState) {
-            Tunnel.State.UP ->
-                VpnStateBus.emit("connected", null, configName)
-            Tunnel.State.DOWN ->
-                VpnStateBus.emit("disconnected", null)
-            Tunnel.State.TOGGLE -> { /* غير مستخدم */ }
-        }
+        try {
+            when (newState) {
+                Tunnel.State.UP ->
+                    VpnStateBus.emit("connected", null, configName)
+                Tunnel.State.DOWN ->
+                    VpnStateBus.emit("disconnected", null)
+                Tunnel.State.TOGGLE -> { /* غير مستخدم */ }
+            }
+        } catch (_: Throwable) {}
     }
 
     var state: Tunnel.State
