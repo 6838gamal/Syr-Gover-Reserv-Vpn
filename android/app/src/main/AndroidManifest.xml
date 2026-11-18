@@ -68,7 +68,7 @@
             android:name=".MyVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
-            android:foregroundServiceType="specialUse|connectedDevice"
+            android:foregroundServiceType="specialUse"
             android:stopWithTask="false"
             android:directBootAware="false">
 
@@ -93,6 +93,7 @@
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="false"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED"
             android:directBootAware="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
