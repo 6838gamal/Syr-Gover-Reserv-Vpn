@@ -13,6 +13,26 @@ class VpnState {
     this.connectedSince,
   });
 
+  // ------------------------------------------------------------------
+  // خصائص مساعدة
+  // ------------------------------------------------------------------
+
+  bool get isConnected => status == VpnStatus.connected;
+  bool get isConnecting => status == VpnStatus.connecting;
+  bool get isDisconnecting => status == VpnStatus.disconnecting;
+  bool get hasError => status == VpnStatus.error;
+  bool get isIdle => status == VpnStatus.disconnected;
+
+  /// مدة الاتصال الحالية (null إذا لم يكن متصلاً).
+  Duration? get connectedDuration {
+    if (status != VpnStatus.connected || connectedSince == null) return null;
+    return DateTime.now().difference(connectedSince!);
+  }
+
+  // ------------------------------------------------------------------
+  // copyWith
+  // ------------------------------------------------------------------
+
   VpnState copyWith({
     VpnStatus? status,
     String? errorMessage,
@@ -31,6 +51,10 @@ class VpnState {
           clearConnectedSince ? null : (connectedSince ?? this.connectedSince),
     );
   }
+
+  // ------------------------------------------------------------------
+  // toStatus — انتقال ذكي
+  // ------------------------------------------------------------------
 
   /// انتقال ذكي: يضبط/يمسح `connectedSince` تلقائياً حسب الحالة الجديدة.
   VpnState toStatus(
@@ -55,9 +79,40 @@ class VpnState {
     );
   }
 
-  /// مدة الاتصال الحالية (null إذا لم يكن متصلاً).
-  Duration? get connectedDuration {
-    if (status != VpnStatus.connected || connectedSince == null) return null;
-    return DateTime.now().difference(connectedSince!);
+  // ------------------------------------------------------------------
+  // toString (للتشخيص)
+  // ------------------------------------------------------------------
+
+  @override
+  String toString() {
+    final parts = <String>['status=${status.name}'];
+    if (errorMessage != null) parts.add('error=$errorMessage');
+    if (activeConfigName != null) parts.add('config=$activeConfigName');
+    if (connectedSince != null) {
+      final d = connectedDuration;
+      if (d != null) parts.add('uptime=${d.inSeconds}s');
+    }
+    return 'VpnState(${parts.join(', ')})';
   }
+
+  // ------------------------------------------------------------------
+  // == و hashCode (للمقارنة)
+  // ------------------------------------------------------------------
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VpnState &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          errorMessage == other.errorMessage &&
+          activeConfigName == other.activeConfigName &&
+          connectedSince == other.connectedSince;
+
+  @override
+  int get hashCode =>
+      status.hashCode ^
+      errorMessage.hashCode ^
+      activeConfigName.hashCode ^
+      connectedSince.hashCode;
 }
