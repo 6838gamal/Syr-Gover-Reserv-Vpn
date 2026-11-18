@@ -203,7 +203,10 @@ class MyVpnService : VpnService() {
         tunnel = null
         instance = null
         isRunning = false
-        try { VpnStateBus.emit("disconnected", null, null) } catch (_: Throwable) {}
+
+        // ✅ إعادة تعيين الحالة في VpnStateBus
+        try { VpnStateBus.reset() } catch (_: Throwable) {}
+
         stopForegroundCompat()
         super.onDestroy()
     }
@@ -364,8 +367,17 @@ class MyVpnService : VpnService() {
         val peerPublicKey = req("peerPublicKey")
         val endpoint = req("endpoint")
         val allowedIps = req("allowedIps")
-        val keepalive = (args["persistentKeepalive"] as? Int)
-            ?: throw IllegalArgumentException("missing: persistentKeepalive")
+
+        // ✅ مرن مع Int / Long / Double / String
+        val keepalive: Int = when (val v = args["persistentKeepalive"]) {
+            is Int -> v
+            is Long -> v.toInt()
+            is Double -> v.toInt()
+            is String -> v.toIntOrNull()
+                ?: throw IllegalArgumentException("invalid keepalive: $v")
+            null -> throw IllegalArgumentException("missing: persistentKeepalive")
+            else -> throw IllegalArgumentException("unexpected keepalive type: ${v::class}")
+        }
 
         Log.d(TAG, "Address: $address")
         Log.d(TAG, "DNS: $dns")
