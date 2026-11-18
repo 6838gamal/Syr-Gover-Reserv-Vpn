@@ -16,10 +16,15 @@ class VpnBridgeDesktop implements VpnBridge {
   String? _confPath;
   String? _tunnelName;
   VpnConfig? _lastConfig;
+  int _reconnectAttempts = 0;
+  static const _maxReconnectAttempts = 5;
 
   bool get _isWindows => Platform.isWindows;
   bool get _isLinux => Platform.isLinux;
   bool get _isMacOS => Platform.isMacOS;
+
+  /// هل نحن على منصة سطح مكتب حقيقية (وليس iOS/Android)؟
+  bool get _isRealDesktop => _isWindows || _isLinux || _isMacOS;
 
   @override
   VpnState get currentState => _state;
@@ -38,16 +43,16 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<void> refreshState() async {
-    // سطح المكتب: لا توجد طبقة أصلية — أعد بث الحالة الحالية
     _controller.add(_state);
   }
 
   // ------------------------------------------------------------------
-  // requestPermission — تحقق من وجود الأدوات فقط
+  // requestPermission
   // ------------------------------------------------------------------
 
   @override
   Future<bool> requestPermission() async {
+    if (!_isRealDesktop) return false;  // iOS/Android: غير مدعوم
     try {
       if (_isWindows) {
         final r = await Process.run('where', ['wireguard.exe'])
@@ -71,6 +76,14 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<void> connect(VpnConfig config) async {
+    if (!_isRealDesktop) {
+      _emit(const VpnState(
+        status: VpnStatus.error,
+        errorMessage: 'VPN غير مدعوم على هذه المنصة',
+      ));
+      return;
+    }
+
     if (_state.status == VpnStatus.connected ||
         _state.status == VpnStatus.connecting) {
       return;
@@ -78,6 +91,7 @@ class VpnBridgeDesktop implements VpnBridge {
 
     _lastConfig = config;
     _tunnelName = config.name;
+    _reconnectAttempts = 0;
     _emit(VpnState(
       status: VpnStatus.connecting,
       activeConfigName: config.name,
@@ -110,6 +124,7 @@ class VpnBridgeDesktop implements VpnBridge {
           errorMessage: 'فشل الاتصال (exit $exitCode)',
           activeConfigName: config.name,
         ));
+        _stopWatchdog();
       }
     } catch (e) {
       _emit(VpnState(
@@ -117,6 +132,7 @@ class VpnBridgeDesktop implements VpnBridge {
         errorMessage: e.toString(),
         activeConfigName: config.name,
       ));
+      _stopWatchdog();
     }
   }
 
@@ -172,21 +188,51 @@ class VpnBridgeDesktop implements VpnBridge {
     return 1;
   }
 
+  // ------------------------------------------------------------------
+  // Watchdog
+  // ------------------------------------------------------------------
+
   void _startWatchdog(VpnConfig config) {
-    _watchdog?.cancel();
+    _stopWatchdog();
+    _reconnectAttempts = 0;
     _watchdog = Timer.periodic(const Duration(seconds: 15), (_) async {
-      if (_state.status != VpnStatus.connected) return;
+      if (_state.status != VpnStatus.connected) {
+        // الحالة ليست connected — أوقف الـ watchdog
+        if (_state.status == VpnStatus.error) _stopWatchdog();
+        return;
+      }
+
       final alive = await _isTunnelAlive(config.name);
-      if (!alive) {
+      if (alive) {
+        _reconnectAttempts = 0;
+        return;
+      }
+
+      // النفق ميت — حاول إعادة الاتصال
+      _reconnectAttempts++;
+      if (_reconnectAttempts > _maxReconnectAttempts) {
+        _stopWatchdog();
         _emit(VpnState(
-          status: VpnStatus.connecting,
+          status: VpnStatus.error,
+          errorMessage: 'فشل إعادة الاتصال بعد $_maxReconnectAttempts محاولات',
           activeConfigName: config.name,
         ));
-        await _forceDown(config.name);
-        await Future.delayed(const Duration(seconds: 2));
-        await connect(config);
+        return;
       }
+
+      _emit(VpnState(
+        status: VpnStatus.connecting,
+        activeConfigName: config.name,
+      ));
+      await _forceDown(config.name);
+      await Future.delayed(const Duration(seconds: 2));
+      await connect(config);
     });
+  }
+
+  void _stopWatchdog() {
+    _watchdog?.cancel();
+    _watchdog = null;
   }
 
   Future<bool> _isTunnelAlive(String name) async {
@@ -232,7 +278,7 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<void> disconnect() async {
-    _watchdog?.cancel();
+    _stopWatchdog();
     _emit(VpnState(
       status: VpnStatus.disconnecting,
       activeConfigName: _state.activeConfigName,
@@ -248,12 +294,14 @@ class VpnBridgeDesktop implements VpnBridge {
       _confPath = null;
       _tunnelName = null;
       _lastConfig = null;
+      _reconnectAttempts = 0;
       _emit(const VpnState(status: VpnStatus.disconnected));
     }
   }
 
   @override
   Future<void> kick() async {
+    if (!_isRealDesktop) return;
     final cfg = _lastConfig;
     if (cfg == null) return;
     if (_state.status != VpnStatus.connected) return;
@@ -269,6 +317,7 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   Future<bool> isConnected() async {
+    if (!_isRealDesktop) return false;
     if (_state.status != VpnStatus.connected) return false;
     final name = _tunnelName;
     if (name == null) return false;
@@ -278,6 +327,38 @@ class VpnBridgeDesktop implements VpnBridge {
   @override
   Future<void> onNetworkChanged() async => kick();
 
+  // ------------------------------------------------------------------
+  // دوال Android-specific — stubs لسطح المكتب
+  // ------------------------------------------------------------------
+
+  @override
+  Future<String> getNotificationErrorLog() async => '';
+
+  @override
+  Future<bool> clearNotificationErrorLog() async => false;
+
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() async => false;
+
+  @override
+  Future<bool> openAppSettings() async => false;
+
+  @override
+  Future<Map<String, dynamic>?> getLastConfig() async {
+    // على سطح المكتب، نستخدم _lastConfig المحفوظ في الذاكرة
+    if (_lastConfig == null) return null;
+    return _lastConfig!.toJson();
+  }
+
+  @override
+  Future<void> clearLastConfig() async {
+    _lastConfig = null;
+  }
+
+  // ------------------------------------------------------------------
+  // دوال مساعدة
+  // ------------------------------------------------------------------
+
   void _emit(VpnState s) {
     _state = s;
     _controller.add(s);
@@ -285,7 +366,7 @@ class VpnBridgeDesktop implements VpnBridge {
 
   @override
   void dispose() {
-    _watchdog?.cancel();
+    _stopWatchdog();
     _controller.close();
   }
 }
