@@ -22,11 +22,13 @@ object VpnStateBus {
 
     fun snapshot(): Map<String, Any?> {
         val running = try { MyVpnService.isRunning } catch (_: Throwable) { false }
+
+        // ✅ لا نُعلن "connected" إلا إذا كانت الحالة الفعلية كذلك
         val actualState = when {
-            running && _state == "connecting" -> "connected"
             !running && _state != "disconnected" -> "disconnected"
             else -> _state
         }
+
         return mapOf(
             "state" to actualState,
             "status" to actualState,
@@ -37,15 +39,21 @@ object VpnStateBus {
     }
 
     fun emit(state: String, message: String? = null, configName: String? = null) {
-        Log.d(TAG, "VpnStateBus.emit: state=$state msg=$message")
+        Log.d(TAG, "VpnStateBus.emit: state=$state msg=$message config=$configName")
         _state = state
         _message = message
         if (configName != null) _configName = configName
         if (state == "disconnected" || state == "error") {
             _configName = null
         }
-        sink?.success(snapshot())
-        
+
+        // ✅ حماية من sink مغلق
+        try {
+            sink?.success(snapshot())
+        } catch (e: Throwable) {
+            Log.w(TAG, "sink.success failed (sink likely closed): ${e.message}")
+        }
+
         // ✅ حفظ الأخطاء في الذاكرة ليقرأها Flutter لاحقاً
         if (state == "error" && message != null) {
             appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -57,8 +65,18 @@ object VpnStateBus {
         val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return null
         val err = prefs.getString(KEY_LAST_ERROR, null)
         if (err != null) {
-            prefs.edit().remove(KEY_LAST_ERROR).apply() // امسحها بعد قراءتها
+            prefs.edit().remove(KEY_LAST_ERROR).apply()
         }
         return err
+    }
+
+    // ✅ إعادة تعيين الحالة عند إيقاف الخدمة
+    fun reset() {
+        _state = "disconnected"
+        _message = null
+        _configName = null
+        try {
+            sink?.success(snapshot())
+        } catch (_: Throwable) {}
     }
 }
