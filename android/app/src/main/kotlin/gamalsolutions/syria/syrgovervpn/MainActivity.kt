@@ -46,7 +46,6 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         Log.d(TAG, "MainActivity.onDestroy")
-        // لا حاجة لتفريغ eventSink — VpnStateBus.sink يُدار عبر EventChannel
         super.onDestroy()
     }
 
@@ -58,7 +57,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         Log.d(TAG, "configureFlutterEngine")
 
-        // ✅ تهيئة الذاكرة لالتقاط الأخطاء (إن كانت مدعومة)
+        // ✅ تهيئة VpnStateBus
         try { VpnStateBus.init(this) } catch (e: Throwable) {
             Log.w(TAG, "VpnStateBus.init failed (ignored): ${e.message}")
         }
@@ -73,7 +72,6 @@ class MainActivity : FlutterActivity() {
                         "disconnect" -> {
                             Log.d(TAG, "disconnect requested")
                             MyVpnService.stop(this)
-                            // الخدمة ستُرسل "disconnecting" و "disconnected" عبر VpnStateBus
                             result.success(null)
                         }
                         "kick" -> {
@@ -118,9 +116,20 @@ class MainActivity : FlutterActivity() {
                             ConfigPersistence.setAutostart(this, enabled)
                             result.success(null)
                         }
+                        "clearLastConfig" -> {
+                            ConfigPersistence.clearLastConfig(this)
+                            result.success(true)
+                        }
+                        "getLastConfig" -> {
+                            result.success(ConfigPersistence.loadLastConfig(this))
+                        }
                         "openAlwaysOnSettings" -> handleOpenAlwaysOn(result)
                         "openBatteryOptimizationSettings" ->
                             handleBatteryOptimization(result)
+                        "isIgnoringBatteryOptimizations" -> {
+                            result.success(isIgnoringBatteryOptimizations())
+                        }
+                        "openAppSettings" -> handleOpenAppSettings(result)
                         else -> {
                             Log.w(TAG, "unknown method: ${call.method}")
                             result.notImplemented()
@@ -257,7 +266,6 @@ class MainActivity : FlutterActivity() {
         }
 
         try {
-            // لا نرسل "connecting" هنا — MyVpnService.onCreate و connect يفعلان ذلك
             MyVpnService.start(this, args)
             result.success(null)
         } catch (e: Exception) {
@@ -320,24 +328,82 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        return try {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } catch (e: Exception) {
+            Log.e(TAG, "isIgnoringBatteryOptimizations failed", e)
+            false
+        }
+    }
+
     private fun handleBatteryOptimization(result: MethodChannel.Result) {
         try {
-            val pm = getSystemService(POWER_SERVICE) as PowerManager
-            if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            if (isIgnoringBatteryOptimizations()) {
                 Log.d(TAG, "already ignoring battery optimizations")
                 result.success(true)
                 return
             }
+
+            // المحاولة الأولى: طلب استثناء مباشر
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+                result.success(true)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS failed: ${e.message}", e)
+                NotificationErrorLogger.log(this, "handleBatteryOptimization/requestIgnore", e)
+            }
+
+            // المحاولة الثانية: فتح قائمة التطبيقات في إعدادات البطارية
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                result.success(true)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "IGNORE_BATTERY_OPTIMIZATION_SETTINGS failed: ${e.message}", e)
+                NotificationErrorLogger.log(this, "handleBatteryOptimization/settings", e)
+            }
+
+            // المحاولة الثالثة: فتح إعدادات التطبيق مباشرة
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+                result.success(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "all battery optimization intents failed", e)
+                NotificationErrorLogger.log(this, "handleBatteryOptimization/allFailed", e)
+                result.success(false)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "battery optimization intent failed", e)
+            NotificationErrorLogger.log(this, "handleBatteryOptimization", e)
+            result.success(false)
+        }
+    }
+
+    private fun handleOpenAppSettings(result: MethodChannel.Result) {
+        try {
             startActivity(
                 Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                     Uri.parse("package:$packageName")
                 )
             )
             result.success(true)
         } catch (e: Exception) {
-            Log.e(TAG, "battery optimization intent failed", e)
-            NotificationErrorLogger.log(this, "handleBatteryOptimization", e)
+            Log.e(TAG, "openAppSettings failed", e)
+            NotificationErrorLogger.log(this, "handleOpenAppSettings", e)
             result.success(false)
         }
     }
