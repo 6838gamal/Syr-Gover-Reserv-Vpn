@@ -40,25 +40,10 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
     }
 
-    override fun onStart() {
-        Log.d(TAG, "MainActivity.onStart")
-        super.onStart()
-    }
-
-    override fun onResume() {
-        Log.d(TAG, "MainActivity.onResume")
-        super.onResume()
-    }
-
-    override fun onPause() {
-        Log.d(TAG, "MainActivity.onPause")
-        super.onPause()
-    }
-
-    override fun onStop() {
-        Log.d(TAG, "MainActivity.onStop")
-        super.onStop()
-    }
+    override fun onStart() { Log.d(TAG, "MainActivity.onStart"); super.onStart() }
+    override fun onResume() { Log.d(TAG, "MainActivity.onResume"); super.onResume() }
+    override fun onPause() { Log.d(TAG, "MainActivity.onPause"); super.onPause() }
+    override fun onStop() { Log.d(TAG, "MainActivity.onStop"); super.onStop() }
 
     override fun onDestroy() {
         Log.d(TAG, "MainActivity.onDestroy")
@@ -74,8 +59,10 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         Log.d(TAG, "configureFlutterEngine")
 
-        // ✅ تهيئة الذاكرة لالتقاط الأخطاء
-        VpnStateBus.init(this)
+        // ✅ تهيئة الذاكرة لالتقاط الأخطاء (إن كانت مدعومة)
+        try { VpnStateBus.init(this) } catch (e: Throwable) {
+            Log.w(TAG, "VpnStateBus.init failed (ignored): ${e.message}")
+        }
 
         MethodChannel(engine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -105,11 +92,24 @@ class MainActivity : FlutterActivity() {
                             Log.d(TAG, "getState → $snapshot")
                             result.success(snapshot)
                         }
-                        "getPendingError" -> { // ✅ سحب الأخطاء المخزنة
+                        "getPendingError" -> {
                             val err = VpnStateBus.consumePendingError()
                             Log.d(TAG, "getPendingError → $err")
                             result.success(err)
                         }
+
+                        // ✅ جديد: سجل أخطاء الإشعارات
+                        "getNotificationErrorLog" -> {
+                            val log = NotificationErrorLogger.readAll(this)
+                            Log.d(TAG, "getNotificationErrorLog length=${log.length}")
+                            result.success(log)
+                        }
+                        "clearNotificationErrorLog" -> {
+                            NotificationErrorLogger.clear(this)
+                            Log.d(TAG, "clearNotificationErrorLog done")
+                            result.success(true)
+                        }
+
                         "requestNotificationPermission" ->
                             handleRequestNotification(result)
                         "getAutostart" ->
@@ -129,6 +129,7 @@ class MainActivity : FlutterActivity() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "method ${call.method} failed", e)
+                    NotificationErrorLogger.log(this, "MethodChannel/${call.method}", e)
                     VpnStateBus.emit("error", e.message ?: e.toString())
                     result.error("METHOD_ERROR", e.message, null)
                 }
@@ -160,6 +161,11 @@ class MainActivity : FlutterActivity() {
         if (requestCode == REQUEST_VPN) {
             val granted = resultCode == Activity.RESULT_OK
             Log.d(TAG, "VPN permission result: granted=$granted")
+            if (!granted) {
+                NotificationErrorLogger.log(
+                    this, "onActivityResult/REQUEST_VPN", null, "VPN permission denied"
+                )
+            }
             pendingPermissionResult?.success(granted)
             pendingPermissionResult = null
         }
@@ -175,6 +181,10 @@ class MainActivity : FlutterActivity() {
             val granted = grantResults.isNotEmpty() &&
                 grantResults[0] == PackageManager.PERMISSION_GRANTED
             Log.d(TAG, "POST_NOTIFICATIONS granted=$granted")
+            NotificationErrorLogger.log(
+                this, "onRequestPermissionsResult/REQUEST_NOTIF", null,
+                if (granted) "granted" else "denied by user"
+            )
             pendingNotifResult?.success(granted)
             pendingNotifResult = null
         }
@@ -203,6 +213,7 @@ class MainActivity : FlutterActivity() {
             startActivityForResult(intent, REQUEST_VPN)
         } catch (e: Exception) {
             Log.e(TAG, "failed to launch permission intent", e)
+            NotificationErrorLogger.log(this, "handlePrepare/startActivityForResult", e)
             pendingPermissionResult = null
             result.error("PERMISSION_LAUNCH_FAILED", e.message, null)
         }
@@ -218,11 +229,34 @@ class MainActivity : FlutterActivity() {
         }
         Log.d(TAG, "connect args keys=${args.keys}")
 
+        // 1) فحص صلاحية VPN
         val prepareIntent = VpnService.prepare(this)
         if (prepareIntent != null) {
             Log.w(TAG, "connect called without VPN permission")
+            NotificationErrorLogger.log(
+                this, "handleConnect/noVpnPermission", null, "VpnService.prepare != null"
+            )
             result.error("NO_PERMISSION", "VPN permission not granted", null)
             return
+        }
+
+        // 2) ✅ فحص صلاحية الإشعارات قبل بدء الخدمة (Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val notifGranted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!notifGranted) {
+                Log.w(TAG, "connect called but POST_NOTIFICATIONS not granted")
+                NotificationErrorLogger.log(
+                    this, "handleConnect/noNotifPermission", null, "POST_NOTIFICATIONS not granted"
+                )
+                result.error(
+                    "NO_NOTIFICATION_PERMISSION",
+                    "صلاحية الإشعارات مطلوبة لتشغيل VPN. اذهب للإعدادات واسمح بها.",
+                    null
+                )
+                return
+            }
         }
 
         try {
@@ -231,6 +265,7 @@ class MainActivity : FlutterActivity() {
             result.success(null)
         } catch (e: Exception) {
             Log.e(TAG, "MyVpnService.start failed", e)
+            NotificationErrorLogger.log(this, "handleConnect/MyVpnService.start", e)
             VpnStateBus.emit("error", e.message ?: e.toString())
             result.error("START_FAILED", e.message, null)
         }
@@ -264,6 +299,7 @@ class MainActivity : FlutterActivity() {
             )
         } catch (e: Exception) {
             Log.e(TAG, "failed to launch notification permission", e)
+            NotificationErrorLogger.log(this, "handleRequestNotification/requestPermissions", e)
             pendingNotifResult = null
             result.error("NOTIF_LAUNCH_FAILED", e.message, null)
         }
@@ -282,6 +318,7 @@ class MainActivity : FlutterActivity() {
             result.success(true)
         } catch (e: Exception) {
             Log.e(TAG, "Settings.ACTION_VPN_SETTINGS not available", e)
+            NotificationErrorLogger.log(this, "handleOpenAlwaysOn", e)
             result.success(false)
         }
     }
@@ -303,6 +340,7 @@ class MainActivity : FlutterActivity() {
             result.success(true)
         } catch (e: Exception) {
             Log.e(TAG, "battery optimization intent failed", e)
+            NotificationErrorLogger.log(this, "handleBatteryOptimization", e)
             result.success(false)
         }
     }
