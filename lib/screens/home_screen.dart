@@ -22,29 +22,44 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   VpnConfig? _selected;
   bool _loading = true;
 
+  // ✅ اشتراك احتياطي مباشر على بثّ الحالة (شبكة أمان مزدوجة مع provider)
+  StreamSubscription<VpnState>? _stateSub;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _loadConfigs();
-      // ✅ مرة واحدة عند البدء: اطلب الحالة الحقيقية من Kotlin
-      if (mounted) {
-        await context.read<VpnController>().refreshState();
-      }
+      if (!mounted) return;
+
+      final ctrl = context.read<VpnController>();
+
+      // جلب أولي للحالة الحقيقية من Kotlin
+      await ctrl.refreshState();
+
+      // ✅ استماع دائم لكل تغيير قادم من Kotlin
+      //   (بجانب context.watch الذي يعتمد على notifyListeners)
+      _stateSub?.cancel();
+      _stateSub = ctrl.bridge.stateStream.listen((_) {
+        if (mounted) setState(() {});
+      });
     });
   }
 
   @override
   void dispose() {
+    _stateSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // ❌ لا نستدعي refreshState هنا — يسبب تكراراً في السجلات
-    // refreshState يُستدعى في initState وبعد connect فقط
+    // ✅ عند العودة للتطبيق: refreshState هادئ (لا يسجّل إن لم يتغيّر شيء)
+    if (state == AppLifecycleState.resumed) {
+      context.read<VpnController>().refreshState();
+    }
   }
 
   Future<void> _loadConfigs() async {
