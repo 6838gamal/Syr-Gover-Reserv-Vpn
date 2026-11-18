@@ -21,8 +21,8 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val TAG = "VPN_TAG"
-        private const val METHOD_CHANNEL = "gamalsolutions.syria.syrgovervpn/vpn"
-        private const val EVENT_CHANNEL = "gamalsolutions.syria.syrgovervpn/vpn_events"
+        private const val METHOD_CHANNEL = "com.example.myvpn/vpn"
+        private const val EVENT_CHANNEL = "com.example.myvpn/vpn_events"
         private const val REQUEST_VPN = 1001
         private const val REQUEST_NOTIF = 1002
     }
