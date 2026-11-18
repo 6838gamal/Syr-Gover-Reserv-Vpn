@@ -4,6 +4,16 @@ import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
 
+/// استثناء مخصص لأخطاء VPN مع رمز واضح
+class VpnException implements Exception {
+  final String message;
+  final String? code;
+  VpnException(this.message, {this.code});
+
+  @override
+  String toString() => 'VpnException($code): $message';
+}
+
 class VpnBridgeAndroid implements VpnBridge {
   static const _channel = MethodChannel('com.example.myvpn/vpn');
   static const _events = EventChannel('com.example.myvpn/vpn_events');
@@ -38,7 +48,7 @@ class VpnBridgeAndroid implements VpnBridge {
     try {
       final snapshot = await _channel.invokeMethod<Map>('getState');
       if (snapshot != null) _onNativeEvent(snapshot);
-      await _fetchPendingError(); // ✅ سحب الأخطاء من الذاكرة
+      await _fetchPendingError();
     } on PlatformException {
       // تجاهل
     }
@@ -55,13 +65,14 @@ class VpnBridgeAndroid implements VpnBridge {
 
   void _onNativeEvent(dynamic event) {
     if (event is! Map) return;
-    
-    final stateStr = (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
+
+    final stateStr =
+        (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
     final message = (event['message'] as String?) ?? (event['error'] as String?);
     final configName = event['configName'] as String?;
 
     final status = _parseStatus(stateStr);
-    
+
     if (configName != null && configName.isNotEmpty) {
       _lastKnownConfigName = configName;
     }
@@ -72,14 +83,12 @@ class VpnBridgeAndroid implements VpnBridge {
     _state = VpnState(
       status: status,
       errorMessage: status == VpnStatus.error ? (message ?? prev.errorMessage) : null,
-      activeConfigName: (status == VpnStatus.disconnected) 
-          ? null 
+      activeConfigName: (status == VpnStatus.disconnected)
+          ? null
           : (configName ?? _lastKnownConfigName),
-      connectedSince: nowConnected
-          ? (prev.connectedSince ?? DateTime.now())
-          : null,
+      connectedSince: nowConnected ? (prev.connectedSince ?? DateTime.now()) : null,
     );
-    
+
     _controller.add(_state);
   }
 
@@ -107,6 +116,8 @@ class VpnBridgeAndroid implements VpnBridge {
     try {
       return await _channel.invokeMethod<bool>('prepare') ?? false;
     } on PlatformException catch (e) {
+      // BUSY ليس خطأ — طلب آخر قيد التنفيذ
+      if (e.code == 'BUSY') return false;
       _emitError('prepare failed: ${e.code} ${e.message}');
       return false;
     }
@@ -116,6 +127,9 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<bool> requestNotificationPermission() async {
     try {
       return await _channel.invokeMethod<bool>('requestNotificationPermission') ?? true;
+    } on PlatformException catch (e) {
+      if (e.code == 'BUSY') return false;
+      return true;
     } catch (_) {
       return true;
     }
@@ -127,6 +141,19 @@ class VpnBridgeAndroid implements VpnBridge {
     try {
       await _channel.invokeMethod('connect', config.toMap());
     } on PlatformException catch (e) {
+      // ✅ معالجة خاصة لأخطاء الصلاحيات
+      if (e.code == 'NO_NOTIFICATION_PERMISSION') {
+        throw VpnException(
+          'صلاحية الإشعارات مطلوبة لتشغيل VPN',
+          code: e.code,
+        );
+      }
+      if (e.code == 'NO_PERMISSION') {
+        throw VpnException(
+          'صلاحية VPN مطلوبة',
+          code: e.code,
+        );
+      }
       _emitError('connect failed: ${e.code} ${e.message}');
       rethrow;
     }
@@ -165,26 +192,116 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<void> onNetworkChanged() async => kick();
 
   // ------------------------------------------------------------------
-  // دوال Android-specific
+  // دوال Android-specific: Autostart
   // ------------------------------------------------------------------
 
   Future<bool> isAutostartEnabled() async {
-    final v = await _channel.invokeMethod<bool>('getAutostart');
-    return v ?? false;
+    try {
+      final v = await _channel.invokeMethod<bool>('getAutostart');
+      return v ?? false;
+    } on PlatformException {
+      return false;
+    }
   }
 
   Future<void> setAutostart(bool enabled) async {
-    await _channel.invokeMethod('setAutostart', {'enabled': enabled});
+    try {
+      await _channel.invokeMethod('setAutostart', {'enabled': enabled});
+    } on PlatformException catch (e) {
+      _emitError('setAutostart failed: ${e.code} ${e.message}');
+    }
   }
+
+  // ------------------------------------------------------------------
+  // دوال Android-specific: Always-On VPN
+  // ------------------------------------------------------------------
 
   Future<bool> openAlwaysOnSettings() async {
-    final v = await _channel.invokeMethod<bool>('openAlwaysOnSettings');
-    return v ?? false;
+    try {
+      final v = await _channel.invokeMethod<bool>('openAlwaysOnSettings');
+      return v ?? false;
+    } on PlatformException {
+      return false;
+    }
   }
 
+  // ------------------------------------------------------------------
+  // دوال Android-specific: Battery Optimization
+  // ------------------------------------------------------------------
+
   Future<bool> requestBatteryOptimizationExemption() async {
-    final v = await _channel.invokeMethod<bool>('openBatteryOptimizationSettings');
-    return v ?? false;
+    try {
+      final v = await _channel.invokeMethod<bool>('openBatteryOptimizationSettings');
+      return v ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// هل التطبيق مستثنى حالياً من تحسين البطارية؟
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    try {
+      final v = await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
+      return v ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // دوال Android-specific: App Settings
+  // ------------------------------------------------------------------
+
+  Future<bool> openAppSettings() async {
+    try {
+      final v = await _channel.invokeMethod<bool>('openAppSettings');
+      return v ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // دوال Android-specific: سجل أخطاء الإشعارات
+  // ------------------------------------------------------------------
+
+  Future<String> getNotificationErrorLog() async {
+    try {
+      final v = await _channel.invokeMethod<String>('getNotificationErrorLog');
+      return v ?? '';
+    } on PlatformException catch (e) {
+      return 'فشل قراءة السجل: ${e.message}';
+    }
+  }
+
+  Future<bool> clearNotificationErrorLog() async {
+    try {
+      final v = await _channel.invokeMethod<bool>('clearNotificationErrorLog');
+      return v ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // دوال Android-specific: إدارة الإعداد المحفوظ
+  // ------------------------------------------------------------------
+
+  Future<Map<String, dynamic>?> getLastConfig() async {
+    try {
+      final v = await _channel.invokeMethod<Map>('getLastConfig');
+      return v == null ? null : Map<String, dynamic>.from(v);
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  Future<void> clearLastConfig() async {
+    try {
+      await _channel.invokeMethod('clearLastConfig');
+    } on PlatformException catch (e) {
+      _emitError('clearLastConfig failed: ${e.code} ${e.message}');
+    }
   }
 
   // ------------------------------------------------------------------
