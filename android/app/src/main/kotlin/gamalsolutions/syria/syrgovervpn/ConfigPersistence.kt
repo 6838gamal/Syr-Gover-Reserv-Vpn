@@ -90,7 +90,9 @@ object ConfigPersistence {
                     is Boolean -> map[k] = v
                     // ✅ إصلاح: Double صغير يُحفظ كـ Int عند القراءة
                     is Double ->
-                        if (v == v.toLong().toDouble() && v in Int.MIN_VALUE..Int.MAX_VALUE)
+                        if (v == v.toLong().toDouble() &&
+                            v >= Int.MIN_VALUE.toDouble() &&
+                            v <= Int.MAX_VALUE.toDouble())
                             map[k] = v.toInt()
                         else map[k] = v
                     is String -> map[k] = v
