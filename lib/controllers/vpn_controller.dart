@@ -21,6 +21,9 @@ class VpnController extends ChangeNotifier {
   bool _wasConnectedBeforeOutage = false;
   bool _autoReconnectEnabled = true;
 
+  // ✅ آخر حالة معروفة — لمقارنة refreshState الهادئ
+  VpnStatus? _lastLoggedStatus;
+
   final List<VpnLog> _logs = [];
   List<VpnLog> get logs => List.unmodifiable(_logs);
 
@@ -65,11 +68,23 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// يطلب الحالة الحقيقية من الجسر (يُستدعى عند العودة للتطبيق)
+  /// يطلب الحالة الحقيقية من الجسر.
+  /// ✅ هادئ: لا يسجّل شيئاً إن لم تتغيّر الحالة فعلياً.
   Future<void> refreshState() async {
-    log('refreshState requested');
+    final before = state;
     await bridge.refreshState();
-    await restoreSession();
+    final after = state;
+
+    final changed = before.status != after.status ||
+        before.connectedSince != after.connectedSince ||
+        before.activeConfigName != after.activeConfigName ||
+        before.errorMessage != after.errorMessage;
+
+    if (changed) {
+      log('refreshState → ${after.status.name}');
+      await restoreSession();
+    }
+    // لا نُسجّل ولا نُنبّه إن لم يتغيّر شيء
   }
 
   // ------------------------- Logs -------------------------
@@ -105,15 +120,20 @@ class VpnController extends ChangeNotifier {
   // ------------------------- State events -------------------------
 
   void _onStateChanged(VpnState s) {
-    log('state → ${s.status.name}'
-        '${s.errorMessage != null ? " (${s.errorMessage})" : ""}');
+    // ✅ نسجّل فقط عند تغيّر فعلي في الحالة (تفادي تكرار السجلات)
+    if (_lastLoggedStatus != s.status || s.errorMessage != null) {
+      log('state → ${s.status.name}'
+          '${s.errorMessage != null ? " (${s.errorMessage})" : ""}');
+      _lastLoggedStatus = s.status;
+    }
+
     if (s.status == VpnStatus.connected) {
       _wasConnectedBeforeOutage = true;
       _persistSession();
-    } else if (s.status == VpnStatus.disconnected ||
-        s.status == VpnStatus.error) {
-      _session.clear();
     }
+    // ⚠️ لا نمسح الجلسة هنا — نتركها لـ disconnect() الصريح
+    // (حتى لا تُفقد connectedSince عند انقطاع لحظي/إعادة اتصال تلقائي)
+
     notifyListeners();
   }
 
