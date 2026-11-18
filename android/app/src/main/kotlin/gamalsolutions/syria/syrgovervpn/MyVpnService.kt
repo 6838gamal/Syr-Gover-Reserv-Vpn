@@ -379,16 +379,28 @@ class MyVpnService : VpnService() {
             else -> throw IllegalArgumentException("unexpected keepalive type: ${v::class}")
         }
 
+        // ✅ MTU (كان مفقوداً — افتراضي 1280 إن لم يُمرر)
+        val mtu: Int = when (val v = args["mtu"]) {
+            is Int -> v
+            is Long -> v.toInt()
+            is Double -> v.toInt()
+            is String -> v.toIntOrNull() ?: 1280
+            null -> 1280
+            else -> 1280
+        }
+
         Log.d(TAG, "Address: $address")
         Log.d(TAG, "DNS: $dns")
         Log.d(TAG, "Endpoint: $endpoint")
         Log.d(TAG, "AllowedIPs: $allowedIps")
         Log.d(TAG, "Keepalive: $keepalive")
+        Log.d(TAG, "MTU: $mtu")
 
         val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(privateKey)
             .parseAddresses(address)
             .parseDnsServers(dns)
+            .parseMtu(mtu.toString())
             .build()
 
         val peer = com.wireguard.config.Peer.Builder()
