@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/material.dart';
@@ -108,14 +109,10 @@ class VpnController extends ChangeNotifier {
     }
 
     if (saved == null) {
-      // ✅ إذا كان الجسر متصلاً لكن لا توجد جلسة، استخدم الاسم من الحالة (وليس unknown إذا أمكن)
       final name = s.activeConfigName ?? 'unknown';
       log('connected but no saved session → synthesizing since=now ($name)',
           level: LogLevel.warn);
-      await _session.save(
-        since: DateTime.now(),
-        configName: name,
-      );
+      await _session.save(since: DateTime.now(), configName: name);
       notifyListeners();
       return;
     }
@@ -179,7 +176,6 @@ class VpnController extends ChangeNotifier {
     final s = state;
     if (s.status != VpnStatus.connected) return;
 
-    // ✅ الإصلاح: إذا كان الاسم مفقوداً، اقرأه من الجلسة المحفوظة مسبقاً
     String name = s.activeConfigName ?? 'unknown';
     if (name == 'unknown') {
       final saved = await _session.load();
@@ -215,6 +211,19 @@ class VpnController extends ChangeNotifier {
 
   Future<bool> connect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
+
+    // 0) على Windows: تأكد من صلاحية المسؤول قبل أي محاولة
+    if (Platform.isWindows && !await WindowsElevation.isAdmin()) {
+      log('not running as administrator → requesting elevation',
+          level: LogLevel.warn);
+      final elevated = await WindowsElevation.requestElevationAndExit();
+      if (!elevated) {
+        log('elevation declined or failed', level: LogLevel.error);
+        return false;
+      }
+      // إن نجح، Process سيُستبدل ويعاد التشغيل؛ لن نصل هنا فعلياً
+      return false;
+    }
 
     // 1) صلاحية الإشعارات (لا نُفشل الاتصال إن رُفضت)
     try {
@@ -286,11 +295,71 @@ class VpnController extends ChangeNotifier {
 }
 
 // =============================================================================
+// WindowsElevation — طلب الصلاحيات على Windows
+// =============================================================================
+
+class WindowsElevation {
+  /// هل التطبيق يعمل حالياً كمسؤول؟
+  static Future<bool> isAdmin() async {
+    if (!Platform.isWindows) return true;
+    try {
+      // `net session` ينجح فقط للمسؤول
+      final r = await Process.run('net', ['session'])
+          .timeout(const Duration(seconds: 3));
+      return r.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// يعيد تشغيل التطبيق عبر UAC ثم يغلق النسخة الحالية.
+  /// يعيد false إذا رُفض UAC أو فشل.
+  static Future<bool> requestElevationAndExit() async {
+    if (!Platform.isWindows) return true;
+    try {
+      final exePath = Platform.resolvedExecutable;
+      // Start-Process -Verb RunAs يعرض نافذة UAC
+      final r = await Process.run(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          'Start-Process -FilePath "$exePath" -Verb RunAs',
+        ],
+      ).timeout(const Duration(seconds: 30));
+
+      if (r.exitCode == 0) {
+        // نجح: اخرج من النسخة غير المرفوعة
+        await Future.delayed(const Duration(milliseconds: 300));
+        exit(0);
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+// =============================================================================
 // main()
 // =============================================================================
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ✅ على Windows: ارفع الصلاحيات قبل أي شيء
+  if (Platform.isWindows) {
+    final admin = await WindowsElevation.isAdmin();
+    if (!admin) {
+      // نطلب UAC مباشرة
+      final elevated = await WindowsElevation.requestElevationAndExit();
+      if (!elevated) {
+        runApp(const _ElevationRequiredApp());
+        return;
+      }
+      return; // لن نصل هنا فعلياً (exit)
+    }
+  }
 
   final VpnBridge bridge = createVpnBridge();
 
@@ -310,6 +379,65 @@ void main() async {
       child: const MyVpnApp(),
     ),
   );
+}
+
+// =============================================================================
+// شاشة: صلاحيات مطلوبة (إن رُفض UAC أو فشل)
+// =============================================================================
+
+class _ElevationRequiredApp extends StatelessWidget {
+  const _ElevationRequiredApp();
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: const Color(0xFFF59E0B),
+        brightness: Brightness.dark,
+      ),
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.admin_panel_settings,
+                    size: 72, color: Colors.amber),
+                const SizedBox(height: 20),
+                const Text(
+                  'صلاحيات المسؤول مطلوبة',
+                  style: TextStyle(
+                      fontSize: 22, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'لتشغيل VPN على Windows، يحتاج التطبيق إلى صلاحيات مسؤول.\n\n'
+                  'أغلق التطبيق ثم شغّله بزر الفأرة الأيمن → "Run as administrator"،\n'
+                  'أو اضغط الزر أدناه لرفع الصلاحيات الآن.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70, height: 1.6),
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  icon: const Icon(Icons.lock_open),
+                  label: const Text('رفع الصلاحيات والمحاولة مجدداً'),
+                  onPressed: () async {
+                    final ok = await WindowsElevation.requestElevationAndExit();
+                    if (!ok) {
+                      // UAC رُفض — لا شيء نفعله
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // =============================================================================
