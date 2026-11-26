@@ -6,10 +6,14 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 
 class BootReceiver : BroadcastReceiver() {
 
@@ -33,20 +37,20 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun handleAutostart(context: Context, intent: Intent) {
-        // 0) إذا كان VPN يعمل بالفعل
-        if (MyVpnService.isRunning) {
-            Log.i(TAG, "VPN يعمل بالفعل — لا حاجة لإعادة التشغيل")
+        // 0) VPN نشط بالفعل؟ (نستخدم state بدل isRunning)
+        val currentState = VpnStateBus.snapshot()["state"] as? String
+        if (currentState == "connected" || currentState == "connecting") {
+            Log.i(TAG, "VPN state=$currentState — لا حاجة لإعادة التشغيل")
             return
         }
 
-        // 1) Always-on VPN — النظام سيتكفل
-        val alwaysOn = intent.getBooleanExtra("alwaysOn", false)
-        if (alwaysOn) {
-            Log.i(TAG, "Always-on VPN — النظام سيتكفل")
+        // 1) Always-On VPN فعلي؟ (فحص ConnectivityManager بدل extra غير موجود)
+        if (isVpnActive(context)) {
+            Log.i(TAG, "VPN نشط على مستوى النظام (Always-On) — لا حاجة")
             return
         }
 
-        // 2) auto-start مفعّل؟
+        // 2) Auto-start مفعّل؟
         if (!ConfigPersistence.isAutostartEnabled(context)) {
             Log.i(TAG, "Auto-start معطّل")
             return
@@ -71,19 +75,16 @@ class BootReceiver : BroadcastReceiver() {
                 context, "BootReceiver/noVpnPermission", null,
                 "prepare() returned non-null on boot"
             )
-            // لا يمكن عرض dialog الصلاحية من BroadcastReceiver
-            // الحل: إشعار يطلب من المستخدم فتح التطبيق
             showAutostartNeedsPermissionNotification(context)
             return
         }
 
-        // 5) شغّل الخدمة — مع معالجة ForegroundServiceStartNotAllowedException
+        // 5) شغّل الخدمة
         Log.i(TAG, "بدء VPN تلقائياً")
         try {
             MyVpnService.start(context, config)
             Log.i(TAG, "MyVpnService.start dispatched OK")
         } catch (e: android.app.ForegroundServiceStartNotAllowedException) {
-            // Android 12+ — لا يمكن بدء FGS من الخلفية
             Log.e(TAG, "ForegroundServiceStartNotAllowedException", e)
             NotificationErrorLogger.log(
                 context, "BootReceiver/FGSNotAllowed", e,
@@ -97,8 +98,22 @@ class BootReceiver : BroadcastReceiver() {
         }
     }
 
+    /// ✅ فحص Always-On VPN الحقيقي (بدل extra "alwaysOn" غير موجود)
+    private fun isVpnActive(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.allNetworks.any { n ->
+                cm.getNetworkCapabilities(n)?.hasTransport(
+                    NetworkCapabilities.TRANSPORT_VPN
+                ) == true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     // ------------------------------------------------------------------
-    // إشعارات إرشادية (عند فشل auto-start)
+    // إشعارات
     // ------------------------------------------------------------------
 
     private fun ensureChannel(context: Context) {
@@ -113,6 +128,14 @@ class BootReceiver : BroadcastReceiver() {
             (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(ch)
         }
+    }
+
+    /// ✅ تحقق من POST_NOTIFICATIONS قبل notify
+    private fun canPostNotifications(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun buildNotif(context: Context, title: String, text: String): android.app.Notification {
@@ -136,6 +159,10 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun showAutostartNeedsPermissionNotification(context: Context) {
+        if (!canPostNotifications(context)) {
+            Log.w(TAG, "cannot post notification — POST_NOTIFICATIONS denied")
+            return
+        }
         ensureChannel(context)
         try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -153,6 +180,10 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun showAutostartBlockedNotification(context: Context) {
+        if (!canPostNotifications(context)) {
+            Log.w(TAG, "cannot post notification — POST_NOTIFICATIONS denied")
+            return
+        }
         ensureChannel(context)
         try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
