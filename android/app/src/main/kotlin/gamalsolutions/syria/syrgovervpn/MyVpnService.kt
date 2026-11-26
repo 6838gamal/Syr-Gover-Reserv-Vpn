@@ -88,7 +88,7 @@ class MyVpnService : VpnService() {
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    if (isAppInForeground(ctx)) {
+                    if (AppLifecycle.isForeground) {
                         Log.d(TAG, "startService (app in foreground)")
                         ctx.startService(i)
                     } else {
@@ -131,27 +131,17 @@ class MyVpnService : VpnService() {
                 }
             } ?: Log.w(TAG, "kick called but service not running")
         }
-
-        private fun isAppInForeground(ctx: Context): Boolean {
-            return try {
-                val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                val processes = am.runningAppProcesses ?: return false
-                val myPid = android.os.Process.myPid()
-                val myUid = android.os.Process.myUid()
-                processes.any {
-                    it.pid == myPid && it.uid == myUid &&
-                        it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
-                }
-            } catch (_: Exception) {
-                false
-            }
-        }
     }
 
     private var tunnel: WgTunnel? = null
     private var backend: GoBackend? = null
     private var lastArgs: Map<String, Any>? = null
     private var currentConfigName: String? = null
+    private var lastNotifText: String? = null
+
+    @Volatile private var isConnecting = false
+    @Volatile private var isDestroying = false
+
     internal val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // ------------------------------------------------------------------
@@ -177,20 +167,22 @@ class MyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand action=${intent?.action}")
 
-        // ✅ معالجة إعادة التشغيل بواسطة START_STICKY أو Always-On VPN
+        // معالجة إعادة التشغيل بواسطة START_STICKY أو Always-On VPN
         if (intent == null) {
             Log.w(TAG, "Restarted by system (START_STICKY/Always-On) — attempting auto-reconnect")
             attemptAutoReconnect()
             return START_STICKY
         }
 
-        when (intent.action) {
-            ACTION_CONNECT -> handleConnectIntent(intent)
-            ACTION_DISCONNECT -> handleDisconnectIntent()
-            ACTION_KICK -> kick()
-            else -> Log.w(TAG, "unknown action: ${intent.action}")
+        return when (intent.action) {
+            ACTION_CONNECT -> { handleConnectIntent(intent); START_STICKY }
+            ACTION_DISCONNECT -> { handleDisconnectIntent(); START_NOT_STICKY }
+            ACTION_KICK -> { kick(); START_STICKY }
+            else -> {
+                Log.w(TAG, "unknown action: ${intent.action}")
+                START_NOT_STICKY
+            }
         }
-        return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -199,14 +191,31 @@ class MyVpnService : VpnService() {
         super.onTaskRemoved(rootIntent)
     }
 
+    override fun onRevoke() {
+        Log.w(TAG, "onRevoke — VPN permission revoked by system")
+        NotificationErrorLogger.log(this, "onRevoke", null, "permission revoked")
+        try { VpnStateBus.emit("error", "تم سحب صلاحية VPN") } catch (_: Throwable) {}
+        try {
+            tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
+        } catch (_: Throwable) {}
+        tunnel = null
+        stopForegroundCompat()
+        stopSelf()
+        super.onRevoke()
+    }
+
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
+        isDestroying = true
+
+        // إغلاق النفق (قد يستغرق ثوانٍ — مقبول في onDestroy)
         try {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (e: Throwable) {
             Log.w(TAG, "error bringing tunnel down on destroy", e)
             NotificationErrorLogger.log(this, "onDestroy/setStateDown", e)
         }
+
         scope.cancel()
         backend = null
         tunnel = null
@@ -222,6 +231,8 @@ class MyVpnService : VpnService() {
     // ------------------------------------------------------------------
 
     private fun attemptAutoReconnect() {
+        if (isDestroying) return
+
         val savedConfig = try {
             ConfigPersistence.loadLastConfig(this)
         } catch (e: Throwable) {
@@ -284,7 +295,10 @@ class MyVpnService : VpnService() {
                 try { VpnStateBus.emit("error", e.message ?: e.toString()) } catch (_: Throwable) {}
             } finally {
                 tunnel = null
+                lastArgs = null
+                currentConfigName = null
                 try { VpnStateBus.emit("disconnected", null) } catch (_: Throwable) {}
+                try { ConfigPersistence.clearLastConfig(this@MyVpnService) } catch (_: Throwable) {}
                 stopForegroundCompat()
                 stopSelf()
             }
@@ -296,6 +310,22 @@ class MyVpnService : VpnService() {
     // ------------------------------------------------------------------
 
     private fun connect(args: Map<String, Any>) {
+        if (isDestroying) {
+            Log.w(TAG, "connect called but service is being destroyed")
+            return
+        }
+        if (isConnecting) {
+            Log.w(TAG, "connect already in progress — ignored")
+            return
+        }
+        isConnecting = true
+
+        // أغلق أي نفق سابق أولاً
+        try {
+            tunnel?.let { old -> backend?.setState(old, Tunnel.State.DOWN, null) }
+        } catch (_: Throwable) {}
+        tunnel = null
+
         lastArgs = args
         currentConfigName = args["configName"] as? String ?: "VPN Config"
 
@@ -343,13 +373,16 @@ class MyVpnService : VpnService() {
                 tunnel = t
 
                 Log.d(TAG, "calling setState(UP)")
+                val t0 = System.currentTimeMillis()
                 try {
                     backend!!.setState(t, Tunnel.State.UP, cfg)
-                    Log.i(TAG, "tunnel UP successfully")
+                    val elapsed = System.currentTimeMillis() - t0
+                    Log.i(TAG, "tunnel UP successfully in ${elapsed}ms")
                     try { VpnStateBus.emit("connected", null, currentConfigName) } catch (_: Throwable) {}
                     updateNotification("متصل — $currentConfigName")
                 } catch (e: Throwable) {
-                    Log.e(TAG, "WireGuard setState(UP) FAILED", e)
+                    val elapsed = System.currentTimeMillis() - t0
+                    Log.e(TAG, "WireGuard setState(UP) FAILED after ${elapsed}ms", e)
                     NotificationErrorLogger.log(this@MyVpnService, "connect/setStateUp", e, "config=$currentConfigName")
                     try { VpnStateBus.emit("error", "فشل النفق: ${e.message}") } catch (_: Throwable) {}
                     updateNotification("فشل الاتصال")
@@ -363,6 +396,8 @@ class MyVpnService : VpnService() {
                     tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
                 } catch (_: Throwable) {}
                 tunnel = null
+            } finally {
+                isConnecting = false
             }
         }
     }
@@ -374,6 +409,8 @@ class MyVpnService : VpnService() {
             NotificationErrorLogger.log(this, "reconnect", null, "no lastArgs")
             return
         }
+
+        // إغلاق النفق القديم ثم إعادة الاتصال
         try {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (e: Throwable) {
@@ -381,6 +418,8 @@ class MyVpnService : VpnService() {
             NotificationErrorLogger.log(this, "reconnect/setStateDown", e)
         }
         tunnel = null
+
+        // connect() تتحقق من isConnecting داخلياً
         connect(args)
     }
 
@@ -497,6 +536,10 @@ class MyVpnService : VpnService() {
     }
 
     private fun updateNotification(text: String) {
+        // لا تُحدّث إذا لم يتغير النص
+        if (text == lastNotifText) return
+        lastNotifText = text
+
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
