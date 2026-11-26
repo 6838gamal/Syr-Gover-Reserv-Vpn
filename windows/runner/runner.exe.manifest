@@ -5,7 +5,7 @@
       type="win32"
       name="SyrGoverIpReservVPN"
       version="1.0.0.0"
-      processorArchitecture="*"/>
+      processorArchitecture="amd64"/>
 
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
