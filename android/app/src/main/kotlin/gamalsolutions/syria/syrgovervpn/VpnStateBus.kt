@@ -8,9 +8,10 @@ object VpnStateBus {
     private const val TAG = "VPN_TAG"
     private const val PREFS_NAME = "vpn_state_prefs"
     private const val KEY_LAST_ERROR = "last_error_message"
+    private const val KEY_LAST_CONFIG = "last_config_name"
 
-    var sink: EventChannel.EventSink? = null
-    private var appContext: Context? = null
+    @Volatile var sink: EventChannel.EventSink? = null
+    @Volatile private var appContext: Context? = null
 
     @Volatile private var _state: String = "disconnected"
     @Volatile private var _message: String? = null
@@ -18,12 +19,15 @@ object VpnStateBus {
 
     fun init(ctx: Context) {
         appContext = ctx.applicationContext
+        // استعادة آخر configName
+        _configName = appContext
+            ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.getString(KEY_LAST_CONFIG, null)
     }
 
     fun snapshot(): Map<String, Any?> {
         val running = try { MyVpnService.isRunning } catch (_: Throwable) { false }
 
-        // ✅ لا نُعلن "connected" إلا إذا كانت الحالة الفعلية كذلك
         val actualState = when {
             !running && _state != "disconnected" -> "disconnected"
             else -> _state
@@ -39,25 +43,39 @@ object VpnStateBus {
     }
 
     fun emit(state: String, message: String? = null, configName: String? = null) {
-        Log.d(TAG, "VpnStateBus.emit: state=$state msg=$message config=$configName")
-        _state = state
-        _message = message
-        if (configName != null) _configName = configName
-        if (state == "disconnected" || state == "error") {
-            _configName = null
+        val newConfig = when {
+            state == "disconnected" || state == "error" -> null
+            configName != null -> configName
+            else -> _configName
         }
 
-        // ✅ حماية من sink مغلق
+        // ✅ تخطّى إذا لم يتغير شيء
+        if (state == _state && message == _message && newConfig == _configName) {
+            Log.d(TAG, "emit skipped (no change): state=$state")
+            return
+        }
+
+        Log.d(TAG, "VpnStateBus.emit: state=$state msg=$message config=$newConfig")
+        _state = state
+        _message = message
+        _configName = newConfig
+
+        // تحديث SharedPreferences
+        val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (state == "error" && message != null) {
+            prefs?.edit()?.putString(KEY_LAST_ERROR, message)?.apply()
+        }
+        if (newConfig != null) {
+            prefs?.edit()?.putString(KEY_LAST_CONFIG, newConfig)?.apply()
+        } else {
+            prefs?.edit()?.remove(KEY_LAST_CONFIG)?.apply()
+        }
+
+        // إرسال إلى Flutter
         try {
             sink?.success(snapshot())
         } catch (e: Throwable) {
             Log.w(TAG, "sink.success failed (sink likely closed): ${e.message}")
-        }
-
-        // ✅ حفظ الأخطاء في الذاكرة ليقرأها Flutter لاحقاً
-        if (state == "error" && message != null) {
-            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                ?.edit()?.putString(KEY_LAST_ERROR, message)?.apply()
         }
     }
 
@@ -70,11 +88,14 @@ object VpnStateBus {
         return err
     }
 
-    // ✅ إعادة تعيين الحالة عند إيقاف الخدمة
     fun reset() {
         _state = "disconnected"
         _message = null
         _configName = null
+        // امسح الحالة المحفوظة
+        appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.edit()?.remove(KEY_LAST_ERROR)?.remove(KEY_LAST_CONFIG)?.apply()
+
         try {
             sink?.success(snapshot())
         } catch (_: Throwable) {}
