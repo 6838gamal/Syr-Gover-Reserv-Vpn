@@ -75,16 +75,30 @@ class VpnController extends ChangeNotifier {
   final SessionPersister _session = SessionPersister();
 
   StreamSubscription<VpnState>? _stateSub;
-  Timer? _networkWatchdog;
+
+  // ── Connectivity watcher (بدون تبعية) ────────────────────────────
+  Timer? _connectivityTimer;
+  Timer? _persistDebounce;
+
+  bool _lastInternetOk = true;
+  DateTime? _outageStart;
+  DateTime? _lastKickAt;
+
+  static const _minKickInterval = Duration(seconds: 30);
+  static const _checkInterval = Duration(seconds: 20);
+
   bool _wasConnectedBeforeOutage = false;
   bool _autoReconnectEnabled = true;
+
+  // ── cache الصلاحيات ─────────────────────────────────────────────
+  bool? _vpnPermissionCache;
 
   final List<VpnLog> _logs = [];
   List<VpnLog> get logs => List.unmodifiable(_logs);
 
   VpnController(this.bridge) {
     _stateSub = bridge.stateStream.listen(_onStateChanged);
-    _startNetworkWatchdog();
+    _startConnectivityWatcher();
     _bootstrap();
   }
 
@@ -138,7 +152,7 @@ class VpnController extends ChangeNotifier {
       LogLevel.error => 'ERROR',
     };
     debugPrint('[VPN $tag] $message');
-    notifyListeners();
+    // ❌ لا notifyListeners هنا — يُستدعى من _onStateChanged
   }
 
   void clearLogs() {
@@ -164,9 +178,16 @@ class VpnController extends ChangeNotifier {
         '${s.errorMessage != null ? " (${s.errorMessage})" : ""}');
     if (s.status == VpnStatus.connected) {
       _wasConnectedBeforeOutage = true;
-      _persistSession();
+      _persistDebounce?.cancel();
+      _persistDebounce = Timer(
+        const Duration(milliseconds: 500),
+        _persistSession,
+      );
     } else if (s.status == VpnStatus.disconnected ||
         s.status == VpnStatus.error) {
+      _persistDebounce?.cancel();
+      _persistDebounce = null;
+      _wasConnectedBeforeOutage = false;
       _session.clear();
     }
     notifyListeners();
@@ -189,22 +210,64 @@ class VpnController extends ChangeNotifier {
     log('session persisted ($name, since=$since)');
   }
 
-  // ------------------------- Watchdog -------------------------
+  // ------------------------- Connectivity Watcher -------------------------
 
-  void _startNetworkWatchdog() {
-    _networkWatchdog?.cancel();
-    _networkWatchdog = Timer.periodic(const Duration(seconds: 10), (_) async {
-      if (!_autoReconnectEnabled) return;
-      if (state.status != VpnStatus.connected) return;
-      if (!_wasConnectedBeforeOutage) return;
-      final online = await hasInternet();
-      if (!online) return;
-      try {
-        await bridge.onNetworkChanged();
-      } catch (e) {
-        log('watchdog error: $e', level: LogLevel.error);
-      }
+  void _startConnectivityWatcher() {
+    _connectivityTimer?.cancel();
+    _connectivityTimer = Timer.periodic(_checkInterval, (_) async {
+      await _checkConnectivity();
     });
+  }
+
+  Future<void> _checkConnectivity() async {
+    if (!_autoReconnectEnabled) return;
+    if (state.status != VpnStatus.connected) {
+      _lastInternetOk = true;
+      _outageStart = null;
+      return;
+    }
+
+    final online = await hasInternet();
+    final now = DateTime.now();
+
+    if (!online) {
+      // ── انقطاع: سجّل وقت البداية فقط، لا kick ──
+      if (_lastInternetOk) {
+        _outageStart = now;
+        log('network outage detected', level: LogLevel.warn);
+      }
+      _lastInternetOk = false;
+      return;
+    }
+
+    // ── الإنترنت موجود ──
+    if (!_lastInternetOk) {
+      // كان منقطعاً وعاد → kick مرة واحدة
+      _lastInternetOk = true;
+      final outageDuration = _outageStart != null
+          ? now.difference(_outageStart!)
+          : Duration.zero;
+      _outageStart = null;
+      log('network restored after ${outageDuration.inSeconds}s → kicking');
+
+      if (_canKick()) {
+        _lastKickAt = now;
+        try {
+          await bridge.onNetworkChanged();
+        } catch (e) {
+          log('kick failed: $e', level: LogLevel.error);
+        }
+      }
+      return;
+    }
+
+    // ── إنترنت موجود باستمرار → لا kick ──
+    // (لا شيء — هذا هو الوضع الطبيعي)
+  }
+
+  bool _canKick() {
+    if (_lastKickAt == null) return true;
+    return DateTime.now().difference(_lastKickAt!) >= _minKickInterval;
   }
 
   // ------------------------- Connect / Disconnect -------------------------
@@ -212,7 +275,7 @@ class VpnController extends ChangeNotifier {
   Future<bool> connect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
 
-    // 0) على Windows: تأكد من صلاحية المسؤول قبل أي محاولة
+    // 0) Windows elevation
     if (Platform.isWindows && !await WindowsElevation.isAdmin()) {
       log('not running as administrator → requesting elevation',
           level: LogLevel.warn);
@@ -221,7 +284,6 @@ class VpnController extends ChangeNotifier {
         log('elevation declined or failed', level: LogLevel.error);
         return false;
       }
-      // إن نجح، Process سيُستبدل ويعاد التشغيل؛ لن نصل هنا فعلياً
       return false;
     }
 
@@ -234,14 +296,20 @@ class VpnController extends ChangeNotifier {
       log('notification permission error: $e', level: LogLevel.warn);
     }
 
-    // 2) صلاحية VPN
+    // 2) صلاحية VPN — مع cache
     log('checking VPN permission...');
     bool granted;
     try {
-      granted = await bridge.requestPermission()
-          .timeout(const Duration(seconds: 60));
+      if (_vpnPermissionCache == true) {
+        granted = true;
+      } else {
+        granted = await bridge.requestPermission()
+            .timeout(const Duration(seconds: 60));
+        _vpnPermissionCache = granted;
+      }
     } catch (e) {
       log('permission error: $e', level: LogLevel.error);
+      _vpnPermissionCache = null; // ← اسمح بإعادة المحاولة
       return false;
     }
     if (!granted) {
@@ -264,6 +332,8 @@ class VpnController extends ChangeNotifier {
       return true;
     } on PlatformException catch (e) {
       log('PlatformException: ${e.code} ${e.message}', level: LogLevel.error);
+      // إذا فشل الاتصال، امسح cache الصلاحية (قد تكون سُحبت)
+      if (e.code == 'NO_PERMISSION') _vpnPermissionCache = null;
       return false;
     } on TimeoutException {
       return false;
@@ -276,6 +346,8 @@ class VpnController extends ChangeNotifier {
   Future<void> disconnect() async {
     log('disconnect requested');
     _wasConnectedBeforeOutage = false;
+    _lastInternetOk = true;
+    _outageStart = null;
     try {
       await bridge.disconnect().timeout(const Duration(seconds: 10));
     } catch (e) {
@@ -287,23 +359,22 @@ class VpnController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _networkWatchdog?.cancel();
+    _connectivityTimer?.cancel();
+    _persistDebounce?.cancel();
     _stateSub?.cancel();
-    bridge.dispose();
+    // ✅ لا تستدعِ bridge.dispose() — الـ singleton يُعاش
     super.dispose();
   }
 }
 
 // =============================================================================
-// WindowsElevation — طلب الصلاحيات على Windows
+// WindowsElevation — كما هو (بدون تغيير)
 // =============================================================================
 
 class WindowsElevation {
-  /// هل التطبيق يعمل حالياً كمسؤول؟
   static Future<bool> isAdmin() async {
     if (!Platform.isWindows) return true;
     try {
-      // `net session` ينجح فقط للمسؤول
       final r = await Process.run('net', ['session'])
           .timeout(const Duration(seconds: 3));
       return r.exitCode == 0;
@@ -312,13 +383,10 @@ class WindowsElevation {
     }
   }
 
-  /// يعيد تشغيل التطبيق عبر UAC ثم يغلق النسخة الحالية.
-  /// يعيد false إذا رُفض UAC أو فشل.
   static Future<bool> requestElevationAndExit() async {
     if (!Platform.isWindows) return true;
     try {
       final exePath = Platform.resolvedExecutable;
-      // Start-Process -Verb RunAs يعرض نافذة UAC
       final r = await Process.run(
         'powershell',
         [
@@ -329,7 +397,6 @@ class WindowsElevation {
       ).timeout(const Duration(seconds: 30));
 
       if (r.exitCode == 0) {
-        // نجح: اخرج من النسخة غير المرفوعة
         await Future.delayed(const Duration(milliseconds: 300));
         exit(0);
       }
@@ -341,23 +408,21 @@ class WindowsElevation {
 }
 
 // =============================================================================
-// main()
+// main() — كما هو (بدون تغيير)
 // =============================================================================
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ على Windows: ارفع الصلاحيات قبل أي شيء
   if (Platform.isWindows) {
     final admin = await WindowsElevation.isAdmin();
     if (!admin) {
-      // نطلب UAC مباشرة
       final elevated = await WindowsElevation.requestElevationAndExit();
       if (!elevated) {
         runApp(const _ElevationRequiredApp());
         return;
       }
-      return; // لن نصل هنا فعلياً (exit)
+      return;
     }
   }
 
@@ -382,7 +447,7 @@ void main() async {
 }
 
 // =============================================================================
-// شاشة: صلاحيات مطلوبة (إن رُفض UAC أو فشل)
+// _ElevationRequiredApp و _BootstrapErrorApp — كما هما (بدون تغيير)
 // =============================================================================
 
 class _ElevationRequiredApp extends StatelessWidget {
@@ -409,8 +474,7 @@ class _ElevationRequiredApp extends StatelessWidget {
                 const SizedBox(height: 20),
                 const Text(
                   'صلاحيات المسؤول مطلوبة',
-                  style: TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.bold),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
                 const Text(
@@ -425,10 +489,7 @@ class _ElevationRequiredApp extends StatelessWidget {
                   icon: const Icon(Icons.lock_open),
                   label: const Text('رفع الصلاحيات والمحاولة مجدداً'),
                   onPressed: () async {
-                    final ok = await WindowsElevation.requestElevationAndExit();
-                    if (!ok) {
-                      // UAC رُفض — لا شيء نفعله
-                    }
+                    await WindowsElevation.requestElevationAndExit();
                   },
                 ),
               ],
@@ -439,10 +500,6 @@ class _ElevationRequiredApp extends StatelessWidget {
     );
   }
 }
-
-// =============================================================================
-// شاشة خطأ بدء التشغيل
-// =============================================================================
 
 class _BootstrapErrorApp extends StatelessWidget {
   final String message;
