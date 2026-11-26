@@ -460,11 +460,7 @@ class MyVpnService : VpnService() {
             else -> 1280
         }
 
-        // ✅ log مبسّط (بدون endpoint في release)
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, "Endpoint: $endpoint")
-            Log.d(TAG, "AllowedIPs: $allowedIps")
-        }
+        // ✅ log مبسّط (بدون endpoint — لا نستخدم BuildConfig)
         Log.d(TAG, "MTU: $mtu, Keepalive: $keepalive")
 
         val iface = com.wireguard.config.Interface.Builder()
