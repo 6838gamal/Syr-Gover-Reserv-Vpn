@@ -7,8 +7,6 @@ on:
 
 jobs:
   build-windows:
-    # ✅ windows-2022 يحتوي VS2022 (17.x) الذي يعرفه Flutter 3.27
-    # windows-latest حالياً = VS18 (2026) الذي لا يدعمه Flutter 3.27
     runs-on: windows-2022
 
     steps:
@@ -22,20 +20,11 @@ jobs:
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) {
-            Write-Error "❌ vswhere.exe not found"
-            exit 1
-          }
+          if (-not (Test-Path $vswhere)) { Write-Error "❌ vswhere.exe not found"; exit 1 }
           $info = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationVersion,installationPath
-          Write-Host "--- vswhere output ---"
-          $info | ForEach-Object { Write-Host $_ }
-
           $version = ($info | Select-Object -First 1)
           Write-Host "VS version: $version"
-          if ($version -match '^18\.') {
-            Write-Error "❌ VS 18 detected, Flutter 3.27 needs VS 17.x. This runner is not suitable."
-            exit 1
-          }
+          if ($version -match '^18\.') { Write-Error "❌ VS 18 detected, need 17.x"; exit 1 }
 
       # ============================================================
       # 2) تجهيز MSBuild
@@ -54,17 +43,13 @@ jobs:
           cache: true
 
       # ============================================================
-      # 4) استخدام pubspec_desktop.yaml كملف الاعتماديات
+      # 4) pubspec
       # ============================================================
       - name: Use pubspec_desktop.yaml as pubspec.yaml
         shell: pwsh
         run: |
-          if (-not (Test-Path "pubspec_desktop.yaml")) {
-            Write-Error "pubspec_desktop.yaml not found!"
-            exit 1
-          }
+          if (-not (Test-Path "pubspec_desktop.yaml")) { Write-Error "pubspec_desktop.yaml not found!"; exit 1 }
           Copy-Item -Path "pubspec_desktop.yaml" -Destination "pubspec.yaml" -Force
-          Write-Host "--- pubspec.yaml (from pubspec_desktop.yaml) ---"
           Get-Content pubspec.yaml
 
       - name: Get dependencies
@@ -74,7 +59,7 @@ jobs:
         run: flutter config --enable-windows-desktop
 
       # ============================================================
-      # 5) حقن WINDOWS_KEY.txt من GitHub Secret
+      # 5) WINDOWS_KEY.txt من Secret
       # ============================================================
       - name: Write WINDOWS_KEY.txt from secret
         shell: pwsh
@@ -82,7 +67,7 @@ jobs:
           WINDOWS_KEY: ${{ secrets.WINDOWS_KEY }}
         run: |
           if ([string]::IsNullOrEmpty($env:WINDOWS_KEY)) {
-            Write-Warning "⚠️ WINDOWS_KEY secret not set; building with empty key."
+            Write-Warning "⚠️ WINDOWS_KEY secret not set."
             Set-Content -Path "WINDOWS_KEY.txt" -Value "" -NoNewline -Encoding utf8NoBOM
           } else {
             Set-Content -Path "WINDOWS_KEY.txt" -Value $env:WINDOWS_KEY -NoNewline -Encoding utf8NoBOM
@@ -90,76 +75,60 @@ jobs:
           }
 
       # ============================================================
-      # 6) التحقق من أن runner.exe.manifest ليس مُدرجاً في add_executable
-      #    (هذا هو الإصلاح الجذري لـ LNK1327)
+      # 6) التحقق أن manifest ليس في add_executable
       # ============================================================
       - name: Ensure manifest is NOT in add_executable
         shell: pwsh
         run: |
           $cmake = "windows/runner/CMakeLists.txt"
-          if (-not (Test-Path $cmake)) {
-            Write-Error "❌ $cmake not found"
-            exit 1
-          }
+          if (-not (Test-Path $cmake)) { Write-Error "❌ $cmake not found"; exit 1 }
           $content = Get-Content $cmake -Raw
           if ($content -match '"runner\.exe\.manifest"') {
-            Write-Error "❌ runner.exe.manifest is still listed in add_executable. Remove that line."
+            Write-Error "❌ runner.exe.manifest is still listed in add_executable."
             exit 1
           }
-          Write-Host "✅ runner.exe.manifest is not in add_executable."
+          Write-Host "✅ runner.exe.manifest not in add_executable."
 
       # ============================================================
-      # 7) التحقق من runner.exe.manifest (المصدر الذي سنضمّنه لاحقاً)
+      # 7) التحقق من manifest source + تحديد mt.exe
+      #    (نحفظ مسار mt.exe في متغير بيئة للخطوات اللاحقة)
       # ============================================================
-      - name: Validate manifest source
+      - name: Validate manifest source and locate mt.exe
         shell: pwsh
         run: |
           $manifest = "windows/runner/runner.exe.manifest"
-          if (-not (Test-Path $manifest)) {
-            Write-Error "❌ $manifest not found"
-            exit 1
-          }
+          if (-not (Test-Path $manifest)) { Write-Error "❌ $manifest not found"; exit 1 }
 
-          # فحص BOM
           $bytes = [System.IO.File]::ReadAllBytes($manifest)
-          if ($bytes.Length -ge 3 -and
-              $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-            Write-Error "❌ runner.exe.manifest has UTF-8 BOM. Remove it."
-            exit 1
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            Write-Error "❌ BOM detected in manifest"; exit 1
           }
           Write-Host "✅ No BOM detected."
-
-          # طباعة المحتوى
           Write-Host "--- runner.exe.manifest ---"
           Get-Content $manifest -Raw
 
-          # البحث عن mt.exe
+          # البحث عن mt.exe مباشرة
           $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
-          if (-not (Test-Path $sdkRoot)) {
-            Write-Error "❌ Windows Kits bin not found at $sdkRoot"
-            exit 1
-          }
+          if (-not (Test-Path $sdkRoot)) { Write-Error "❌ Windows Kits bin not found at $sdkRoot"; exit 1 }
 
           $mt = Get-ChildItem -Path $sdkRoot -Filter mt.exe -Recurse -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -match '\\x64\\mt\.exe$' } |
                 Sort-Object FullName -Descending |
                 Select-Object -First 1
-
-          if (-not $mt) {
-            Write-Error "❌ mt.exe not found in Windows SDK"
-            exit 1
-          }
+          if (-not $mt) { Write-Error "❌ mt.exe not found in Windows SDK"; exit 1 }
           Write-Host "Using mt.exe: $($mt.FullName)"
 
+          # احفظ المسار لبقية الخطوات
+          "MT_EXE=$($mt.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "✅ MT_EXE saved to environment."
+
+          # تحقق
           & $mt.FullName -manifest $manifest -validate_manifest
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "❌ Manifest validation failed (exit $LASTEXITCODE)"
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ Manifest validation failed (exit $LASTEXITCODE)"; exit 1 }
           Write-Host "✅ Manifest is valid."
 
       # ============================================================
-      # 8) تنظيف build cache القديم
+      # 8) تنظيف build
       # ============================================================
       - name: Clean build directory
         shell: pwsh
@@ -168,7 +137,7 @@ jobs:
           Write-Host "✅ build directory cleaned."
 
       # ============================================================
-      # 9) بناء Release (بدون manifest في add_executable → لا LNK1327)
+      # 9) بناء Release
       # ============================================================
       - name: Build Windows Release
         shell: pwsh
@@ -178,7 +147,7 @@ jobs:
           flutter build windows --release
 
       # ============================================================
-      # 10) تضمين manifest في EXE عبر mt.exe (post-build)
+      # 10) تضمين manifest في EXE (post-build)
       # ============================================================
       - name: Embed manifest into EXE
         shell: pwsh
@@ -193,24 +162,19 @@ jobs:
           }
           Write-Host "Target EXE: $($exe.FullName)"
 
-          $sdk = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
-                  Sort-Object Name -Descending | Select-Object -First 1).FullName + "\x64"
-          $mt = "$sdk\mt.exe"
-          if (-not (Test-Path $mt)) {
-            Write-Error "❌ mt.exe not found at $mt"
+          $mt = $env:MT_EXE
+          if (-not $mt -or -not (Test-Path $mt)) {
+            Write-Error "❌ MT_EXE not set or file missing: $mt"
             exit 1
           }
           Write-Host "Using mt.exe: $mt"
 
           & $mt -manifest "windows\runner\runner.exe.manifest" -outputresource:"$($exe.FullName)";#1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "❌ mt.exe failed to embed manifest (exit $LASTEXITCODE)"
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ mt.exe failed (exit $LASTEXITCODE)"; exit 1 }
           Write-Host "✅ Manifest embedded into EXE."
 
       # ============================================================
-      # 11) التحقق من وجود manifest داخل EXE
+      # 11) التحقق من manifest داخل EXE
       # ============================================================
       - name: Verify manifest in EXE
         shell: pwsh
@@ -220,28 +184,23 @@ jobs:
                  Select-Object -First 1
           if (-not $exe) { Write-Error "❌ EXE not found"; exit 1 }
 
-          $sdk = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
-                  Sort-Object Name -Descending | Select-Object -First 1).FullName + "\x64"
-          $mt = "$sdk\mt.exe"
+          $mt = $env:MT_EXE
+          if (-not $mt -or -not (Test-Path $mt)) { Write-Error "❌ MT_EXE not set"; exit 1 }
 
           & $mt -inputresource:"$($exe.FullName)";#1 -out:extracted.manifest
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "❌ Failed to extract manifest from EXE"
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ Failed to extract manifest"; exit 1 }
 
           Write-Host "--- Extracted manifest from EXE ---"
           Get-Content extracted.manifest -Raw
 
-          $content = Get-Content extracted.manifest -Raw
-          if ($content -notmatch 'requireAdministrator') {
+          if ((Get-Content extracted.manifest -Raw) -notmatch 'requireAdministrator') {
             Write-Error "❌ requireAdministrator NOT found in embedded manifest!"
             exit 1
           }
-          Write-Host "✅ requireAdministrator confirmed in EXE manifest."
+          Write-Host "✅ requireAdministrator confirmed."
 
       # ============================================================
-      # 12) رفع سجلات البناء عند الفشل
+      # 12) رفع سجلات عند الفشل
       # ============================================================
       - name: Upload build logs on failure
         if: failure()
@@ -256,7 +215,7 @@ jobs:
           retention-days: 7
 
       # ============================================================
-      # 13) رفع المخرجات الخام (مفيد للتشخيص)
+      # 13) رفع raw build
       # ============================================================
       - name: Upload raw Windows build
         uses: actions/upload-artifact@v4
@@ -267,44 +226,24 @@ jobs:
           if-no-files-found: warn
 
       # ============================================================
-      # 14) تركيب Inno Setup
+      # 14) Inno Setup
       # ============================================================
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
-      # ============================================================
-      # 15) تجهيز مجلد الإخراج
-      # ============================================================
       - name: Prepare installer output dir
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "build\installer" | Out-Null
-          Write-Host "✅ build\installer ready."
+        run: New-Item -ItemType Directory -Force -Path "build\installer" | Out-Null
 
-      # ============================================================
-      # 16) إنشاء الـ installer
-      # ============================================================
       - name: Create Installer (Single EXE)
         shell: pwsh
         run: |
-          if (-not (Test-Path "installer.iss")) {
-            Write-Error "❌ installer.iss not found!"
-            exit 1
-          }
+          if (-not (Test-Path "installer.iss")) { Write-Error "❌ installer.iss not found"; exit 1 }
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            Write-Error "❌ ISCC.exe not found at $iscc"
-            exit 1
-          }
+          if (-not (Test-Path $iscc)) { Write-Error "❌ ISCC.exe not found"; exit 1 }
           & $iscc "installer.iss"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "❌ ISCC failed with exit code $LASTEXITCODE"
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ ISCC failed (exit $LASTEXITCODE)"; exit 1 }
 
-      # ============================================================
-      # 17) رفع الـ installer النهائي
-      # ============================================================
       - name: Upload Single EXE
         uses: actions/upload-artifact@v4
         with:
