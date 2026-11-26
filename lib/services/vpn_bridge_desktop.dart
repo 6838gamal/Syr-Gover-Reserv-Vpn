@@ -690,9 +690,13 @@ class VpnBridgeDesktop implements VpnBridge {
     return await _isTunnelAlive(name);
   }
 
-  /// ✅ debounce: لا نُعيد تشغيل النفق إلا بعد استقرار الشبكة
+  /// ✅ debounce: لا نُعيد تشغيل النفق إلا بعد استقرار الشبكة.
+  ///
+  /// [networkKey] — معامل اختياري متوافق مع VpnBridge.
+  /// غير مستخدم في Desktop (لا يوجد connectivity_plus)،
+  /// لكن يجب أن يكون موجوداً لتوافق التوقيع.
   @override
-  Future<void> onNetworkChanged() async {
+  Future<void> onNetworkChanged({String? networkKey}) async {
     if (_state.status != VpnStatus.connected) return;
 
     _kickDebounce?.cancel();
