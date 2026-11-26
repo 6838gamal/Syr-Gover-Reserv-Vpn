@@ -25,15 +25,22 @@ object NotificationErrorLogger {
     private const val MAX_SIZE = 512 * 1024
 
     private val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+    // ✅ إخفاء أي مفتاح WireGuard (44 حرفاً base64)
+    private val wgKeyRegex = Regex("[A-Za-z0-9+/]{43}=")
+
+    private fun sanitize(input: String): String {
+        return input.replace(wgKeyRegex, "***REDACTED***")
+    }
 
     fun log(context: Context, stage: String, error: Throwable? = null, extra: String? = null) {
-        val msg = buildString {
+        val rawMsg = buildString {
             append("[${fmt.format(java.util.Date())}]")
             append(" [$stage] ")
             append(error?.message ?: "no-exception")
             if (!extra.isNullOrBlank()) append(" | ").append(extra)
             error?.stackTraceToString()?.let { append("\n").append(it) }
         }
+        val msg = sanitize(rawMsg)
         Log.e(TAG, msg, error)
         try {
             val f = java.io.File(context.filesDir, FILE_NAME)
@@ -144,10 +151,6 @@ class MyVpnService : VpnService() {
 
     internal val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // ------------------------------------------------------------------
-    // Lifecycle
-    // ------------------------------------------------------------------
-
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
@@ -167,7 +170,6 @@ class MyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand action=${intent?.action}")
 
-        // معالجة إعادة التشغيل بواسطة START_STICKY أو Always-On VPN
         if (intent == null) {
             Log.w(TAG, "Restarted by system (START_STICKY/Always-On) — attempting auto-reconnect")
             attemptAutoReconnect()
@@ -199,6 +201,8 @@ class MyVpnService : VpnService() {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (_: Throwable) {}
         tunnel = null
+        lastArgs = null
+        currentConfigName = null
         stopForegroundCompat()
         stopSelf()
         super.onRevoke()
@@ -208,7 +212,6 @@ class MyVpnService : VpnService() {
         Log.d(TAG, "onDestroy")
         isDestroying = true
 
-        // إغلاق النفق (قد يستغرق ثوانٍ — مقبول في onDestroy)
         try {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (e: Throwable) {
@@ -225,10 +228,6 @@ class MyVpnService : VpnService() {
         stopForegroundCompat()
         super.onDestroy()
     }
-
-    // ------------------------------------------------------------------
-    // Auto-reconnect (START_STICKY / Always-On)
-    // ------------------------------------------------------------------
 
     private fun attemptAutoReconnect() {
         if (isDestroying) return
@@ -259,10 +258,6 @@ class MyVpnService : VpnService() {
         Log.i(TAG, "autoReconnect: reconnecting with saved config")
         connect(savedConfig)
     }
-
-    // ------------------------------------------------------------------
-    // Intent handlers
-    // ------------------------------------------------------------------
 
     private fun handleConnectIntent(intent: Intent) {
         val args = mutableMapOf<String, Any>()
@@ -305,10 +300,6 @@ class MyVpnService : VpnService() {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Connect / reconnect
-    // ------------------------------------------------------------------
-
     private fun connect(args: Map<String, Any>) {
         if (isDestroying) {
             Log.w(TAG, "connect called but service is being destroyed")
@@ -320,7 +311,6 @@ class MyVpnService : VpnService() {
         }
         isConnecting = true
 
-        // أغلق أي نفق سابق أولاً
         try {
             tunnel?.let { old -> backend?.setState(old, Tunnel.State.DOWN, null) }
         } catch (_: Throwable) {}
@@ -340,6 +330,8 @@ class MyVpnService : VpnService() {
                     NotificationErrorLogger.log(this@MyVpnService, "connect/prepare", null, "VPN permission missing")
                     try { VpnStateBus.emit("error", "صلاحية VPN مطلوبة") } catch (_: Throwable) {}
                     updateNotification("صلاحية VPN مطلوبة")
+                    lastArgs = null
+                    currentConfigName = null
                     stopForegroundCompat()
                     stopSelf()
                     return@launch
@@ -359,6 +351,8 @@ class MyVpnService : VpnService() {
                     NotificationErrorLogger.log(this@MyVpnService, "connect/buildConfig", e, "args=${args.keys}")
                     try { VpnStateBus.emit("error", "إعدادات غير صالحة: ${e.message}") } catch (_: Throwable) {}
                     updateNotification("إعدادات غير صالحة")
+                    lastArgs = null
+                    currentConfigName = null
                     stopForegroundCompat()
                     stopSelf()
                     return@launch
@@ -386,6 +380,12 @@ class MyVpnService : VpnService() {
                     NotificationErrorLogger.log(this@MyVpnService, "connect/setStateUp", e, "config=$currentConfigName")
                     try { VpnStateBus.emit("error", "فشل النفق: ${e.message}") } catch (_: Throwable) {}
                     updateNotification("فشل الاتصال")
+                    // ✅ مسح lastArgs و currentConfigName عند فشل الاتصال
+                    tunnel = null
+                    lastArgs = null
+                    currentConfigName = null
+                    stopForegroundCompat()
+                    stopSelf()
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
@@ -396,6 +396,10 @@ class MyVpnService : VpnService() {
                     tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
                 } catch (_: Throwable) {}
                 tunnel = null
+                lastArgs = null
+                currentConfigName = null
+                stopForegroundCompat()
+                stopSelf()
             } finally {
                 isConnecting = false
             }
@@ -410,7 +414,6 @@ class MyVpnService : VpnService() {
             return
         }
 
-        // إغلاق النفق القديم ثم إعادة الاتصال
         try {
             tunnel?.let { t -> backend?.setState(t, Tunnel.State.DOWN, null) }
         } catch (e: Throwable) {
@@ -419,13 +422,8 @@ class MyVpnService : VpnService() {
         }
         tunnel = null
 
-        // connect() تتحقق من isConnecting داخلياً
         connect(args)
     }
-
-    // ------------------------------------------------------------------
-    // Config
-    // ------------------------------------------------------------------
 
     private fun buildConfig(args: Map<String, Any>): Config {
         Log.d(TAG, "بناء إعدادات WireGuard...")
@@ -462,12 +460,12 @@ class MyVpnService : VpnService() {
             else -> 1280
         }
 
-        Log.d(TAG, "Address: $address")
-        Log.d(TAG, "DNS: $dns")
-        Log.d(TAG, "Endpoint: $endpoint")
-        Log.d(TAG, "AllowedIPs: $allowedIps")
-        Log.d(TAG, "Keepalive: $keepalive")
-        Log.d(TAG, "MTU: $mtu")
+        // ✅ log مبسّط (بدون endpoint في release)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "Endpoint: $endpoint")
+            Log.d(TAG, "AllowedIPs: $allowedIps")
+        }
+        Log.d(TAG, "MTU: $mtu, Keepalive: $keepalive")
 
         val iface = com.wireguard.config.Interface.Builder()
             .parsePrivateKey(privateKey)
@@ -485,10 +483,6 @@ class MyVpnService : VpnService() {
 
         return Config.Builder().setInterface(iface).addPeer(peer).build()
     }
-
-    // ------------------------------------------------------------------
-    // Notification
-    // ------------------------------------------------------------------
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -536,7 +530,6 @@ class MyVpnService : VpnService() {
     }
 
     private fun updateNotification(text: String) {
-        // لا تُحدّث إذا لم يتغير النص
         if (text == lastNotifText) return
         lastNotifText = text
 
