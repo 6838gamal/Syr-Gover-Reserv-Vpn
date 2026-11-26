@@ -2,17 +2,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
-import 'vpn_bridge.dart';
-
-/// استثناء مخصص لأخطاء VPN مع رمز واضح
-class VpnException implements Exception {
-  final String message;
-  final String? code;
-  VpnException(this.message, {this.code});
-
-  @override
-  String toString() => 'VpnException($code): $message';
-}
+import 'vpn_bridge.dart'; // VpnException تُستورد من هنا
 
 class VpnBridgeAndroid implements VpnBridge {
   // ------------------------------------------------------------------
@@ -66,7 +56,7 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<void> refreshState() async {
     try {
       final snapshot = await _channel.invokeMethod<Map>('getState');
-      if (snapshot != null) _onNativeEvent(snapshot);
+      if (snapshot != null) _onNativeEvent(snapshot, force: true);
       await _fetchPendingError();
     } on PlatformException {
       // تجاهل
@@ -76,7 +66,7 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<void> _fetchPendingError() async {
     try {
       final err = await _channel.invokeMethod<String>('getPendingError');
-      if (err != null && err.isNotEmpty) {
+      if (err != null && err.isNotEmpty && _state.status != VpnStatus.connected) {
         _emitError(err);
       }
     } catch (_) {}
@@ -86,12 +76,11 @@ class VpnBridgeAndroid implements VpnBridge {
   // معالجة الأحداث مع throttle
   // ------------------------------------------------------------------
 
-  void _onNativeEvent(dynamic event) {
+  void _onNativeEvent(dynamic event, {bool force = false}) {
     if (event is! Map) return;
 
-    // throttle: تجاهل الأحداث المتقاربة جداً
     final now = DateTime.now();
-    if (now.difference(_lastEventAt) < _eventThrottle) return;
+    if (!force && now.difference(_lastEventAt) < _eventThrottle) return;
     _lastEventAt = now;
 
     final stateStr =
@@ -114,7 +103,7 @@ class VpnBridgeAndroid implements VpnBridge {
       activeConfigName: (status == VpnStatus.disconnected)
           ? null
           : (configName ?? _lastKnownConfigName),
-      connectedSince: nowConnected ? (prev.connectedSince ?? DateTime.now()) : null,
+      connectedSince: nowConnected ? (prev.connectedSince ?? now) : null,
     );
 
     if (!_disposed && !_controller.isClosed) {
@@ -148,7 +137,6 @@ class VpnBridgeAndroid implements VpnBridge {
     try {
       return await _channel.invokeMethod<bool>('prepare') ?? false;
     } on PlatformException catch (e) {
-      // BUSY ليس خطأ — طلب آخر قيد التنفيذ
       if (e.code == 'BUSY') return false;
       _emitError('prepare failed: ${e.code} ${e.message}');
       return false;
@@ -169,11 +157,14 @@ class VpnBridgeAndroid implements VpnBridge {
 
   @override
   Future<void> connect(VpnConfig config) async {
+    if (_state.status == VpnStatus.connecting ||
+        _state.status == VpnStatus.connected) {
+      return; // اتصال جارٍ أو قائم بالفعل
+    }
     _lastKnownConfigName = config.name;
     try {
       await _channel.invokeMethod('connect', config.toMap());
     } on PlatformException catch (e) {
-      // ✅ معالجة خاصة لأخطاء الصلاحيات
       if (e.code == 'NO_NOTIFICATION_PERMISSION') {
         throw VpnException(
           'صلاحية الإشعارات مطلوبة لتشغيل VPN',
@@ -193,8 +184,9 @@ class VpnBridgeAndroid implements VpnBridge {
 
   @override
   Future<void> disconnect() async {
-    // إلغاء أي kick معلّق قبل قطع الاتصال
     _kickDebounce?.cancel();
+    _kickDebounce = null;
+    if (_state.status == VpnStatus.disconnected) return;
     try {
       await _channel.invokeMethod('disconnect');
       _lastKnownConfigName = null;
@@ -222,15 +214,12 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  /// ✅ debounce: لا نُعيد تشغيل النفق إلا بعد استقرار الشبكة
   @override
   Future<void> onNetworkChanged() async {
-    // لا فائدة من kick إذا لم نكن متصلين
     if (_state.status != VpnStatus.connected) return;
 
     _kickDebounce?.cancel();
     _kickDebounce = Timer(_kickDebounceDuration, () async {
-      // تحقق مجدداً قبل التنفيذ
       if (_state.status == VpnStatus.connected) {
         await kick();
       }
@@ -238,7 +227,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   // ------------------------------------------------------------------
-  // دوال Android-specific: Autostart
+  // Autostart
   // ------------------------------------------------------------------
 
   Future<bool> isAutostartEnabled() async {
@@ -259,7 +248,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   // ------------------------------------------------------------------
-  // دوال Android-specific: Always-On VPN
+  // Always-On VPN
   // ------------------------------------------------------------------
 
   Future<bool> openAlwaysOnSettings() async {
@@ -272,7 +261,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   // ------------------------------------------------------------------
-  // دوال Android-specific: Battery Optimization
+  // Battery Optimization
   // ------------------------------------------------------------------
 
   Future<bool> requestBatteryOptimizationExemption() async {
@@ -284,7 +273,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  /// هل التطبيق مستثنى حالياً من تحسين البطارية؟
   Future<bool> isIgnoringBatteryOptimizations() async {
     try {
       final v = await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
@@ -295,7 +283,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   // ------------------------------------------------------------------
-  // دوال Android-specific: App Settings
+  // App Settings
   // ------------------------------------------------------------------
 
   Future<bool> openAppSettings() async {
@@ -308,7 +296,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   // ------------------------------------------------------------------
-  // دوال Android-specific: سجل أخطاء الإشعارات
+  // Notification error log
   // ------------------------------------------------------------------
 
   Future<String> getNotificationErrorLog() async {
@@ -330,7 +318,7 @@ class VpnBridgeAndroid implements VpnBridge {
   }
 
   // ------------------------------------------------------------------
-  // دوال Android-specific: إدارة الإعداد المحفوظ
+  // Saved config
   // ------------------------------------------------------------------
 
   Future<Map<String, dynamic>?> getLastConfig() async {
