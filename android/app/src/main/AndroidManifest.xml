@@ -29,7 +29,7 @@
 
     <application
         android:label="My VPN"
-        android:name="${applicationName}"
+        android:name=".MyVpnApp"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
@@ -93,7 +93,6 @@
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="false"
-            android:permission="android.permission.RECEIVE_BOOT_COMPLETED"
             android:directBootAware="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
