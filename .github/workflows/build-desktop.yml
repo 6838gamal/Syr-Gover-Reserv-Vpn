@@ -7,6 +7,8 @@ on:
 
 jobs:
   build-windows:
+    # ✅ windows-2022 يحتوي VS2022 (17.x) الذي يعرفه Flutter 3.27
+    # windows-latest حالياً = VS18 (2026) الذي لا يدعمه Flutter 3.27
     runs-on: windows-2022
 
     steps:
@@ -31,7 +33,7 @@ jobs:
           $version = ($info | Select-Object -First 1)
           Write-Host "VS version: $version"
           if ($version -match '^18\.') {
-            Write-Error "❌ VS 18 detected, Flutter 3.27 needs VS 17.x."
+            Write-Error "❌ VS 18 detected, Flutter 3.27 needs VS 17.x. This runner is not suitable."
             exit 1
           }
 
@@ -81,23 +83,44 @@ jobs:
         run: |
           if ([string]::IsNullOrEmpty($env:WINDOWS_KEY)) {
             Write-Warning "⚠️ WINDOWS_KEY secret not set; building with empty key."
+            Set-Content -Path "WINDOWS_KEY.txt" -Value "" -NoNewline -Encoding utf8NoBOM
           } else {
             Set-Content -Path "WINDOWS_KEY.txt" -Value $env:WINDOWS_KEY -NoNewline -Encoding utf8NoBOM
             Write-Host "✅ WINDOWS_KEY.txt created."
           }
 
       # ============================================================
-      # 6) التحقق من runner.exe.manifest
+      # 6) التحقق من أن runner.exe.manifest ليس مُدرجاً في add_executable
+      #    (هذا هو الإصلاح الجذري لـ LNK1327)
       # ============================================================
-      - name: Validate runner.exe.manifest
+      - name: Ensure manifest is NOT in add_executable
+        shell: pwsh
+        run: |
+          $cmake = "windows/runner/CMakeLists.txt"
+          if (-not (Test-Path $cmake)) {
+            Write-Error "❌ $cmake not found"
+            exit 1
+          }
+          $content = Get-Content $cmake -Raw
+          if ($content -match '"runner\.exe\.manifest"') {
+            Write-Error "❌ runner.exe.manifest is still listed in add_executable. Remove that line."
+            exit 1
+          }
+          Write-Host "✅ runner.exe.manifest is not in add_executable."
+
+      # ============================================================
+      # 7) التحقق من runner.exe.manifest (المصدر الذي سنضمّنه لاحقاً)
+      # ============================================================
+      - name: Validate manifest source
         shell: pwsh
         run: |
           $manifest = "windows/runner/runner.exe.manifest"
           if (-not (Test-Path $manifest)) {
-            Write-Error "❌ runner.exe.manifest not found at $manifest"
+            Write-Error "❌ $manifest not found"
             exit 1
           }
 
+          # فحص BOM
           $bytes = [System.IO.File]::ReadAllBytes($manifest)
           if ($bytes.Length -ge 3 -and
               $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
@@ -106,9 +129,11 @@ jobs:
           }
           Write-Host "✅ No BOM detected."
 
+          # طباعة المحتوى
           Write-Host "--- runner.exe.manifest ---"
           Get-Content $manifest -Raw
 
+          # البحث عن mt.exe
           $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           if (-not (Test-Path $sdkRoot)) {
             Write-Error "❌ Windows Kits bin not found at $sdkRoot"
@@ -134,30 +159,7 @@ jobs:
           Write-Host "✅ Manifest is valid."
 
       # ============================================================
-      # 7) إزالة الـ manifest من CMakeLists مؤقتاً لتجاوز LNK1327
-      #    سنضمّنه بعد البناء عبر mt.exe مباشرة.
-      # ============================================================
-      - name: Neutralize manifest in CMakeLists (temporary)
-        shell: pwsh
-        run: |
-          $cmake = "windows/runner/CMakeLists.txt"
-          if (-not (Test-Path $cmake)) {
-            Write-Warning "⚠️ $cmake not found; skipping."
-            exit 0
-          }
-          $original = Get-Content $cmake -Raw
-          Copy-Item $cmake "$cmake.orig" -Force
-
-          # احذف أي سطر يحتوي MANIFESTINPUT أو MANIFEST:EMBED
-          $filtered = ($original -split "`r?`n" | Where-Object {
-            $_ -notmatch '/MANIFESTINPUT' -and $_ -notmatch '/MANIFEST:EMBED'
-          }) -join "`n"
-
-          Set-Content -Path $cmake -Value $filtered -NoNewline -Encoding utf8NoBOM
-          Write-Host "✅ CMakeLists manifest flags removed (backup: $cmake.orig)."
-
-      # ============================================================
-      # 8) تنظيف build cache
+      # 8) تنظيف build cache القديم
       # ============================================================
       - name: Clean build directory
         shell: pwsh
@@ -166,7 +168,7 @@ jobs:
           Write-Host "✅ build directory cleaned."
 
       # ============================================================
-      # 9) بناء Release (بدون manifest مخصص)
+      # 9) بناء Release (بدون manifest في add_executable → لا LNK1327)
       # ============================================================
       - name: Build Windows Release
         shell: pwsh
@@ -176,25 +178,20 @@ jobs:
           flutter build windows --release
 
       # ============================================================
-      # 10) تضمين manifest في EXE بعد البناء (يتجاوز link.exe)
+      # 10) تضمين manifest في EXE عبر mt.exe (post-build)
       # ============================================================
-      - name: Embed manifest into EXE post-build
+      - name: Embed manifest into EXE
         shell: pwsh
         run: |
-          $exe = "build\windows\x64\runner\Release\SyrGoverIpReservVPN.exe"
-          if (-not (Test-Path $exe)) {
-            # جرّب إيجاد أي exe في المجلد
-            $found = Get-ChildItem "build\windows\x64\runner\Release" -Filter "*.exe" |
-                     Where-Object { $_.Name -notmatch '^flutter_windows' } |
-                     Select-Object -First 1
-            if (-not $found) {
-              Write-Error "❌ No EXE found in build\windows\x64\runner\Release"
-              Get-ChildItem "build\windows\x64\runner\Release" -Recurse | ForEach-Object { Write-Host $_.FullName }
-              exit 1
-            }
-            $exe = $found.FullName
+          $exe = Get-ChildItem "build\windows\x64\runner\Release" -Filter "*.exe" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -notmatch '^flutter_windows' } |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "❌ No EXE found in build\windows\x64\runner\Release"
+            Get-ChildItem "build\windows\x64\runner\Release" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            exit 1
           }
-          Write-Host "Target EXE: $exe"
+          Write-Host "Target EXE: $($exe.FullName)"
 
           $sdk = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
                   Sort-Object Name -Descending | Select-Object -First 1).FullName + "\x64"
@@ -205,7 +202,7 @@ jobs:
           }
           Write-Host "Using mt.exe: $mt"
 
-          & $mt -manifest "windows\runner\runner.exe.manifest" -outputresource:"$exe";#1
+          & $mt -manifest "windows\runner\runner.exe.manifest" -outputresource:"$($exe.FullName)";#1
           if ($LASTEXITCODE -ne 0) {
             Write-Error "❌ mt.exe failed to embed manifest (exit $LASTEXITCODE)"
             exit 1
@@ -215,10 +212,10 @@ jobs:
       # ============================================================
       # 11) التحقق من وجود manifest داخل EXE
       # ============================================================
-      - name: Verify manifest embedded in EXE
+      - name: Verify manifest in EXE
         shell: pwsh
         run: |
-          $exe = Get-ChildItem "build\windows\x64\runner\Release" -Filter "*.exe" |
+          $exe = Get-ChildItem "build\windows\x64\runner\Release" -Filter "*.exe" -ErrorAction SilentlyContinue |
                  Where-Object { $_.Name -notmatch '^flutter_windows' } |
                  Select-Object -First 1
           if (-not $exe) { Write-Error "❌ EXE not found"; exit 1 }
@@ -228,6 +225,11 @@ jobs:
           $mt = "$sdk\mt.exe"
 
           & $mt -inputresource:"$($exe.FullName)";#1 -out:extracted.manifest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ Failed to extract manifest from EXE"
+            exit 1
+          }
+
           Write-Host "--- Extracted manifest from EXE ---"
           Get-Content extracted.manifest -Raw
 
@@ -254,7 +256,7 @@ jobs:
           retention-days: 7
 
       # ============================================================
-      # 13) رفع المخرجات الخام
+      # 13) رفع المخرجات الخام (مفيد للتشخيص)
       # ============================================================
       - name: Upload raw Windows build
         uses: actions/upload-artifact@v4
