@@ -124,6 +124,13 @@ class VpnConfig {
         path: j['path'] as String?,
       );
 
+  /// ✅ alias مطلوب بواسطة VpnBridgeDesktop.init()
+  /// حيث getLastConfig() يعيد ناتج toJson() (وليس toMap()).
+  /// مفاتيح toJson() هي: name, privateKey, address, dns, mtu,
+  /// peerPublicKey, endpoint, allowedIps, persistentKeepalive, [path].
+  factory VpnConfig.fromMap(Map<String, dynamic> map) =>
+      VpnConfig.fromJson(map);
+
   static int? _asInt(dynamic v) {
     if (v == null) return null;
     if (v is int) return v;
