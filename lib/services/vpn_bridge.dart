@@ -1,6 +1,16 @@
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 
+/// استثناء مخصص لأخطاء VPN — مشترك بين كل التنفيذات.
+class VpnException implements Exception {
+  final String message;
+  final String? code;
+  VpnException(this.message, {this.code});
+
+  @override
+  String toString() => 'VpnException($code): $message';
+}
+
 /// الواجهة المجردة لـ VPN Bridge.
 ///
 /// تُنفَّذ بواسطة:
@@ -14,30 +24,44 @@ abstract class VpnBridge {
   // دورة الحياة الأساسية
   // ------------------------------------------------------------------
 
+  /// تهيئة الجسر (تسجيل المستمعين + جلب الحالة الأولية).
+  /// يجب استدعاؤها مرة واحدة عند بدء التطبيق.
   Future<void> init();
 
   /// يطلب صلاحية VPN. يعيد true إذا مُنحت.
   Future<bool> requestPermission();
 
-  /// يطلب صلاحية الإشعارات (Android 13+). التنفيذ الافتراضي: true.
+  /// يطلب صلاحية الإشعارات (Android 13+).
+  /// التنفيذ الافتراضي: true (المنصات الأخرى لا تحتاجها).
   Future<bool> requestNotificationPermission() async => true;
 
+  /// يبدأ الاتصال.
+  /// يرمي [VpnException] إذا فشل الاتصال أو نقصت صلاحية.
   Future<void> connect(VpnConfig config);
+
+  /// يقطع الاتصال.
   Future<void> disconnect();
 
   /// إعادة الاتصال (kick). التنفيذ الافتراضي: لا شيء.
   Future<void> kick() async {}
 
+  /// استعلام مباشر من الجانب الأصلي (أبطأ من قراءة [currentState]).
   Future<bool> isConnected();
 
   /// تحديث الحالة من المصدر الأصلي. التنفيذ الافتراضي: لا شيء.
   Future<void> refreshState() async {}
 
+  /// بثّ تغييرات الحالة. متعدد المستمعين مسموح (broadcast).
   Stream<VpnState> get stateStream;
+
+  /// الحالة الحالية (آخر قيمة معروفة — قراءة مجانية).
   VpnState get currentState;
 
-  Future<void> onNetworkChanged();
+  /// يُستدعى عند تغيّر نوع الشبكة (Wi-Fi ↔ بيانات، أو انقطاع).
+  /// التنفيذ الافتراضي: لا شيء.
+  Future<void> onNetworkChanged() async {}
 
+  /// تحرير الموارد. يجب أن يكون آمناً للاستدعاء المتكرر (idempotent).
   void dispose();
 
   // ------------------------------------------------------------------
