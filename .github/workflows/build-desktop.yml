@@ -90,8 +90,7 @@ jobs:
           Write-Host "✅ runner.exe.manifest not in add_executable."
 
       # ============================================================
-      # 7) التحقق من manifest source + تحديد mt.exe
-      #    (نحفظ مسار mt.exe في متغير بيئة للخطوات اللاحقة)
+      # 7) التحقق من manifest + تحديد mt.exe
       # ============================================================
       - name: Validate manifest source and locate mt.exe
         shell: pwsh
@@ -107,7 +106,6 @@ jobs:
           Write-Host "--- runner.exe.manifest ---"
           Get-Content $manifest -Raw
 
-          # البحث عن mt.exe مباشرة
           $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           if (-not (Test-Path $sdkRoot)) { Write-Error "❌ Windows Kits bin not found at $sdkRoot"; exit 1 }
 
@@ -118,11 +116,9 @@ jobs:
           if (-not $mt) { Write-Error "❌ mt.exe not found in Windows SDK"; exit 1 }
           Write-Host "Using mt.exe: $($mt.FullName)"
 
-          # احفظ المسار لبقية الخطوات
           "MT_EXE=$($mt.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "✅ MT_EXE saved to environment."
 
-          # تحقق
           & $mt.FullName -manifest $manifest -validate_manifest
           if ($LASTEXITCODE -ne 0) { Write-Error "❌ Manifest validation failed (exit $LASTEXITCODE)"; exit 1 }
           Write-Host "✅ Manifest is valid."
@@ -148,6 +144,7 @@ jobs:
 
       # ============================================================
       # 10) تضمين manifest في EXE (post-build)
+      #     ★ إصلاح: ;#1 داخل علامات الاقتباس
       # ============================================================
       - name: Embed manifest into EXE
         shell: pwsh
@@ -163,18 +160,17 @@ jobs:
           Write-Host "Target EXE: $($exe.FullName)"
 
           $mt = $env:MT_EXE
-          if (-not $mt -or -not (Test-Path $mt)) {
-            Write-Error "❌ MT_EXE not set or file missing: $mt"
-            exit 1
-          }
+          if (-not $mt -or -not (Test-Path $mt)) { Write-Error "❌ MT_EXE not set or file missing: $mt"; exit 1 }
           Write-Host "Using mt.exe: $mt"
 
-          & $mt -manifest "windows\runner\runner.exe.manifest" -outputresource:"$($exe.FullName)";#1
+          # ★ ;#1 داخل السلسلة
+          & $mt -manifest "windows\runner\runner.exe.manifest" -outputresource:"$($exe.FullName);#1"
           if ($LASTEXITCODE -ne 0) { Write-Error "❌ mt.exe failed (exit $LASTEXITCODE)"; exit 1 }
           Write-Host "✅ Manifest embedded into EXE."
 
       # ============================================================
       # 11) التحقق من manifest داخل EXE
+      #     ★ إصلاح: ;#1 داخل علامات الاقتباس
       # ============================================================
       - name: Verify manifest in EXE
         shell: pwsh
@@ -187,8 +183,9 @@ jobs:
           $mt = $env:MT_EXE
           if (-not $mt -or -not (Test-Path $mt)) { Write-Error "❌ MT_EXE not set"; exit 1 }
 
-          & $mt -inputresource:"$($exe.FullName)";#1 -out:extracted.manifest
-          if ($LASTEXITCODE -ne 0) { Write-Error "❌ Failed to extract manifest"; exit 1 }
+          # ★ ;#1 داخل السلسلة
+          & $mt -inputresource:"$($exe.FullName);#1" -out:extracted.manifest
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ Failed to extract manifest (exit $LASTEXITCODE)"; exit 1 }
 
           Write-Host "--- Extracted manifest from EXE ---"
           Get-Content extracted.manifest -Raw
