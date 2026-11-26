@@ -7,26 +7,44 @@ on:
 
 jobs:
   build-windows:
-    # ✅ استخدام windows-2022 (يحتوي VS2022 الذي يعرفه Flutter 3.27)
-    # windows-latest حالياً = VS18 (2026) الذي لا يدعمه Flutter 3.27
+    # ✅ windows-2022 يحتوي VS2022 (17.x) الذي يعرفه Flutter 3.27
     runs-on: windows-2022
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ✅ تجهيز MSBuild
+      # ============================================================
+      # 1) التحقق من إصدار Visual Studio
+      # ============================================================
+      - name: Verify Visual Studio version
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "❌ vswhere.exe not found"
+            exit 1
+          }
+          $info = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationVersion,installationPath
+          Write-Host "--- vswhere output ---"
+          $info | ForEach-Object { Write-Host $_ }
+
+          $version = ($info | Select-Object -First 1)
+          Write-Host "VS version: $version"
+          if ($version -match '^18\.') {
+            Write-Error "❌ VS 18 detected, Flutter 3.27 needs VS 17.x. This runner is not suitable."
+            exit 1
+          }
+
+      # ============================================================
+      # 2) تجهيز MSBuild
+      # ============================================================
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ✅ تشخيص: عرض إصدار VS المثبت (للتأكد أنه 17.x وليس 18.x)
-      - name: Verify Visual Studio version
-        run: |
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
-            -latest -products * `
-            -requires Microsoft.Component.MSBuild `
-            -property installationVersion,installationPath
-
+      # ============================================================
+      # 3) تجهيز Flutter
+      # ============================================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -34,7 +52,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # ✅ استخدام pubspec_desktop.yaml كملف الاعتماديات الأساسي
+      # ============================================================
+      # 4) استخدام pubspec_desktop.yaml كملف الاعتماديات
+      # ============================================================
       - name: Use pubspec_desktop.yaml as pubspec.yaml
         shell: pwsh
         run: |
@@ -52,16 +72,124 @@ jobs:
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
-      # ✅ حذف build cache القديم (يمنع استخدام VS2019 من cache)
+      # ============================================================
+      # 5) حقن WINDOWS_KEY.txt من GitHub Secret (إن وُجد)
+      # ============================================================
+      - name: Write WINDOWS_KEY.txt from secret
+        shell: pwsh
+        env:
+          WINDOWS_KEY: ${{ secrets.WINDOWS_KEY }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:WINDOWS_KEY)) {
+            Write-Warning "⚠️ WINDOWS_KEY secret not set; building with empty key."
+          } else {
+            Set-Content -Path "WINDOWS_KEY.txt" -Value $env:WINDOWS_KEY -NoNewline -Encoding utf8NoBOM
+            Write-Host "✅ WINDOWS_KEY.txt created."
+          }
+
+      # ============================================================
+      # 6) التحقق من runner.exe.manifest قبل البناء
+      # ============================================================
+      - name: Validate runner.exe.manifest
+        shell: pwsh
+        run: |
+          $manifest = "windows/runner/runner.exe.manifest"
+          if (-not (Test-Path $manifest)) {
+            Write-Error "❌ runner.exe.manifest not found at $manifest"
+            exit 1
+          }
+
+          # فحص BOM
+          $bytes = [System.IO.File]::ReadAllBytes($manifest)
+          if ($bytes.Length -ge 3 -and
+              $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            Write-Error "❌ runner.exe.manifest has UTF-8 BOM. Remove it (save as UTF-8 without BOM)."
+            exit 1
+          }
+          Write-Host "✅ No BOM detected."
+
+          # طباعة المحتوى
+          Write-Host "--- runner.exe.manifest ---"
+          Get-Content $manifest -Raw
+
+          # البحث عن mt.exe
+          $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          if (-not (Test-Path $sdkRoot)) {
+            Write-Error "❌ Windows Kits bin not found at $sdkRoot"
+            exit 1
+          }
+
+          $mt = Get-ChildItem -Path $sdkRoot -Filter mt.exe -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\x64\\mt\.exe$' } |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1
+
+          if (-not $mt) {
+            Write-Error "❌ mt.exe not found in Windows SDK"
+            exit 1
+          }
+          Write-Host "Using mt.exe: $($mt.FullName)"
+
+          # تحقق عبر mt.exe
+          & $mt.FullName -manifest $manifest -validate_manifest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ Manifest validation failed (exit $LASTEXITCODE)"
+            exit 1
+          }
+          Write-Host "✅ Manifest is valid."
+
+      # ============================================================
+      # 7) فحص CMakeLists.txt للتأكد من عدم تكرار MANIFESTINPUT
+      # ============================================================
+      - name: Check CMakeLists for duplicate MANIFESTINPUT
+        shell: pwsh
+        run: |
+          $cmake = "windows/runner/CMakeLists.txt"
+          if (-not (Test-Path $cmake)) {
+            Write-Warning "⚠️ $cmake not found; skipping check."
+            exit 0
+          }
+          $matches = (Select-String -Path $cmake -Pattern "MANIFESTINPUT" -AllMatches).Matches
+          $count = if ($matches) { $matches.Count } else { 0 }
+          Write-Host "MANIFESTINPUT occurrences in CMakeLists.txt: $count"
+          if ($count -gt 1) {
+            Write-Error "❌ /MANIFESTINPUT mentioned $count times in CMakeLists.txt. Should be at most once."
+            exit 1
+          }
+
+      # ============================================================
+      # 8) تنظيف build cache القديم
+      # ============================================================
       - name: Clean build directory
+        shell: pwsh
         run: |
           if (Test-Path build) { Remove-Item -Recurse -Force build }
+          Write-Host "✅ build directory cleaned."
 
-      # ✅ بناء Release (Flutter سيكتشف VS2022 تلقائياً)
+      # ============================================================
+      # 9) بناء Release
+      # ============================================================
       - name: Build Windows Release
         run: flutter build windows --release
 
-      # ✅ رفع المخرجات الخام (مفيد للتشخيص)
+      # ============================================================
+      # 10) رفع سجلات البناء عند الفشل (للتشخيص)
+      # ============================================================
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build/windows/x64/**/*.log
+            build/windows/x64/**/*.txt
+            build/windows/x64/**/*.binlog
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # ============================================================
+      # 11) رفع المخرجات الخام
+      # ============================================================
       - name: Upload raw Windows build
         uses: actions/upload-artifact@v4
         with:
@@ -70,17 +198,45 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+      # ============================================================
+      # 12) تركيب Inno Setup
+      # ============================================================
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
-      # ✅ إنشاء مجلد الإخراج (Inno Setup لا ينشئه تلقائياً دائماً)
+      # ============================================================
+      # 13) تجهيز مجلد الإخراج
+      # ============================================================
       - name: Prepare installer output dir
-        run: mkdir build\installer -Force
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "build\installer" | Out-Null
+          Write-Host "✅ build\installer ready."
 
-      # ✅ إنشاء الـ installer (تأكد من اسم ملف .iss الصحيح)
+      # ============================================================
+      # 14) إنشاء الـ installer
+      # ============================================================
       - name: Create Installer (Single EXE)
-        run: iscc installer.iss
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "installer.iss")) {
+            Write-Error "❌ installer.iss not found!"
+            exit 1
+          }
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Error "❌ ISCC.exe not found at $iscc"
+            exit 1
+          }
+          & $iscc "installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ ISCC failed with exit code $LASTEXITCODE"
+            exit 1
+          }
 
+      # ============================================================
+      # 15) رفع الـ installer النهائي
+      # ============================================================
       - name: Upload Single EXE
         uses: actions/upload-artifact@v4
         with:
