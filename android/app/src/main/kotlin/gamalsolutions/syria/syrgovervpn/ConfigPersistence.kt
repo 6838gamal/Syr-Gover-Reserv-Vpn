@@ -10,50 +10,59 @@ import org.json.JSONObject
 object ConfigPersistence {
 
     private const val TAG = "VPN_TAG"
-    private const val PREFS = "vpn_prefs_encrypted"
+    private const val PREFS_ENCRYPTED = "vpn_prefs_encrypted"
+    private const val PREFS_PLAIN = "vpn_prefs_plain"
     private const val KEY_LAST = "last_config"
     private const val KEY_AUTOSTART = "autostart"
 
-    // ✅ cache thread-safe لتجنب إعادة إنشاء MasterKey في كل استدعاء
-    @Volatile
-    private var cachedPrefs: SharedPreferences? = null
+    @Volatile private var cachedEncrypted: SharedPreferences? = null
+    @Volatile private var cachedPlain: SharedPreferences? = null
 
-    private fun prefs(ctx: Context): SharedPreferences {
-        cachedPrefs?.let { return it }
+    private fun encryptedPrefs(ctx: Context): SharedPreferences {
+        cachedEncrypted?.let { return it }
         synchronized(this) {
-            cachedPrefs?.let { return it }
-
+            cachedEncrypted?.let { return it }
             val masterKey = MasterKey.Builder(ctx)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
             val p = EncryptedSharedPreferences.create(
                 ctx,
-                PREFS,
+                PREFS_ENCRYPTED,
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-            cachedPrefs = p
+            cachedEncrypted = p
             return p
         }
     }
 
-    /// prefs آمنة مع fallback إلى SharedPreferences عادية إذا فشل التشفير
-    private fun safePrefs(ctx: Context): SharedPreferences {
+    /// ✅ prefs عادية — تعمل دائماً، حتى قبل فتح القفل
+    private fun plainPrefs(ctx: Context): SharedPreferences {
+        cachedPlain?.let { return it }
+        synchronized(this) {
+            cachedPlain?.let { return it }
+            val p = ctx.getSharedPreferences(PREFS_PLAIN, Context.MODE_PRIVATE)
+            cachedPlain = p
+            return p
+        }
+    }
+
+    private fun safeEncryptedPrefs(ctx: Context): SharedPreferences {
         return try {
-            prefs(ctx)
+            encryptedPrefs(ctx)
         } catch (e: Throwable) {
             Log.e(TAG, "EncryptedSharedPreferences failed, falling back to plain prefs", e)
             NotificationErrorLogger.log(
-                ctx, "ConfigPersistence/safePrefs", e,
-                "fallback to plain prefs"
+                ctx, "ConfigPersistence/safeEncryptedPrefs", e,
+                "fallback to plain prefs for encrypted data"
             )
-            ctx.getSharedPreferences("${PREFS}_plain", Context.MODE_PRIVATE)
+            ctx.getSharedPreferences("${PREFS_ENCRYPTED}_plain", Context.MODE_PRIVATE)
         }
     }
 
     // ------------------------------------------------------------------
-    // حفظ / تحميل آخر إعداد
+    // حفظ / تحميل آخر إعداد (يبقى مشفراً)
     // ------------------------------------------------------------------
 
     fun saveLastConfig(ctx: Context, args: Map<String, Any>) {
@@ -70,7 +79,7 @@ object ConfigPersistence {
                     else -> json.put(k, v.toString())
                 }
             }
-            safePrefs(ctx).edit().putString(KEY_LAST, json.toString()).apply()
+            safeEncryptedPrefs(ctx).edit().putString(KEY_LAST, json.toString()).apply()
             Log.d(TAG, "saveLastConfig (encrypted): keys=${args.keys}")
         } catch (e: Exception) {
             Log.e(TAG, "saveLastConfig failed", e)
@@ -80,7 +89,7 @@ object ConfigPersistence {
 
     fun loadLastConfig(ctx: Context): Map<String, Any>? {
         return try {
-            val raw = safePrefs(ctx).getString(KEY_LAST, null) ?: return null
+            val raw = safeEncryptedPrefs(ctx).getString(KEY_LAST, null) ?: return null
             val json = JSONObject(raw)
             val map = mutableMapOf<String, Any>()
             json.keys().forEach { k ->
@@ -88,7 +97,6 @@ object ConfigPersistence {
                     is Int -> map[k] = v
                     is Long -> map[k] = v
                     is Boolean -> map[k] = v
-                    // ✅ إصلاح: Double صغير يُحفظ كـ Int عند القراءة
                     is Double ->
                         if (v == v.toLong().toDouble() &&
                             v >= Int.MIN_VALUE.toDouble() &&
@@ -110,7 +118,7 @@ object ConfigPersistence {
 
     fun clearLastConfig(ctx: Context) {
         try {
-            safePrefs(ctx).edit().remove(KEY_LAST).apply()
+            safeEncryptedPrefs(ctx).edit().remove(KEY_LAST).apply()
             Log.d(TAG, "clearLastConfig done")
         } catch (e: Exception) {
             Log.e(TAG, "clearLastConfig failed", e)
@@ -119,13 +127,13 @@ object ConfigPersistence {
     }
 
     // ------------------------------------------------------------------
-    // Auto-start
+    // Auto-start (✅ الآن في plain prefs — لا يفشل عند Boot)
     // ------------------------------------------------------------------
 
     fun setAutostart(ctx: Context, enabled: Boolean) {
         try {
-            safePrefs(ctx).edit().putBoolean(KEY_AUTOSTART, enabled).apply()
-            Log.d(TAG, "setAutostart: $enabled")
+            plainPrefs(ctx).edit().putBoolean(KEY_AUTOSTART, enabled).apply()
+            Log.d(TAG, "setAutostart: $enabled (plain)")
         } catch (e: Exception) {
             Log.e(TAG, "setAutostart failed", e)
             NotificationErrorLogger.log(ctx, "ConfigPersistence/setAutostart", e)
@@ -134,10 +142,9 @@ object ConfigPersistence {
 
     fun isAutostartEnabled(ctx: Context): Boolean {
         return try {
-            safePrefs(ctx).getBoolean(KEY_AUTOSTART, false)
+            plainPrefs(ctx).getBoolean(KEY_AUTOSTART, false)
         } catch (e: Exception) {
             Log.e(TAG, "isAutostartEnabled failed", e)
-            NotificationErrorLogger.log(ctx, "ConfigPersistence/isAutostartEnabled", e)
             false
         }
     }
