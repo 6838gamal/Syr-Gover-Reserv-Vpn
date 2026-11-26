@@ -1,6 +1,8 @@
 package gamalsolutions.syria.syrgovervpn
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import io.flutter.plugin.common.EventChannel
 
@@ -17,17 +19,21 @@ object VpnStateBus {
     @Volatile private var _message: String? = null
     @Volatile private var _configName: String? = null
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     fun init(ctx: Context) {
         appContext = ctx.applicationContext
-        // استعادة آخر configName
+        // استعادة آخر configName بعد إعادة تشغيل التطبيق
         _configName = appContext
             ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.getString(KEY_LAST_CONFIG, null)
+        Log.d(TAG, "VpnStateBus.init: restored configName=$_configName")
     }
 
     fun snapshot(): Map<String, Any?> {
         val running = try { MyVpnService.isRunning } catch (_: Throwable) { false }
 
+        // لا نُعلن "connected" إلا إذا كانت الحالة الفعلية كذلك
         val actualState = when {
             !running && _state != "disconnected" -> "disconnected"
             else -> _state
@@ -49,7 +55,7 @@ object VpnStateBus {
             else -> _configName
         }
 
-        // ✅ تخطّى إذا لم يتغير شيء
+        // تخطّى الإرسال إذا لم يتغير شيء (يمنع إعادة بناء الواجهة بلا داعٍ)
         if (state == _state && message == _message && newConfig == _configName) {
             Log.d(TAG, "emit skipped (no change): state=$state")
             return
@@ -60,7 +66,7 @@ object VpnStateBus {
         _message = message
         _configName = newConfig
 
-        // تحديث SharedPreferences
+        // تحديث SharedPreferences (آمن من أي thread)
         val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (state == "error" && message != null) {
             prefs?.edit()?.putString(KEY_LAST_ERROR, message)?.apply()
@@ -71,11 +77,13 @@ object VpnStateBus {
             prefs?.edit()?.remove(KEY_LAST_CONFIG)?.apply()
         }
 
-        // إرسال إلى Flutter
-        try {
-            sink?.success(snapshot())
-        } catch (e: Throwable) {
-            Log.w(TAG, "sink.success failed (sink likely closed): ${e.message}")
+        // إرسال إلى Flutter — يجب أن يكون على main thread
+        mainHandler.post {
+            try {
+                sink?.success(snapshot())
+            } catch (e: Throwable) {
+                Log.w(TAG, "sink.success failed (sink likely closed): ${e.message}")
+            }
         }
     }
 
@@ -96,8 +104,8 @@ object VpnStateBus {
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.edit()?.remove(KEY_LAST_ERROR)?.remove(KEY_LAST_CONFIG)?.apply()
 
-        try {
-            sink?.success(snapshot())
-        } catch (_: Throwable) {}
+        mainHandler.post {
+            try { sink?.success(snapshot()) } catch (_: Throwable) {}
+        }
     }
 }
