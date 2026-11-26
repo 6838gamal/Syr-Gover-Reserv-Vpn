@@ -31,7 +31,7 @@ class MainActivity : FlutterActivity() {
     private var pendingNotifResult: MethodChannel.Result? = null
 
     // ------------------------------------------------------------------
-    // Lifecycle logging
+    // Lifecycle
     // ------------------------------------------------------------------
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
@@ -39,10 +39,33 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
     }
 
-    override fun onStart() { Log.d(TAG, "MainActivity.onStart"); super.onStart() }
-    override fun onResume() { Log.d(TAG, "MainActivity.onResume"); super.onResume() }
-    override fun onPause() { Log.d(TAG, "MainActivity.onPause"); super.onPause() }
-    override fun onStop() { Log.d(TAG, "MainActivity.onStop"); super.onStop() }
+    override fun onStart() {
+        Log.d(TAG, "MainActivity.onStart")
+        AppLifecycle.onForeground()
+        super.onStart()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Log.d(TAG, "MainActivity.onResume")
+        // ✅ تحرير أي طلب صلاحية معلّق (المستخدم قد يكون عاد من الحوار)
+        if (pendingPermissionResult != null) {
+            Log.w(TAG, "onResume: releasing stale permission result")
+            try { pendingPermissionResult?.success(false) } catch (_: Throwable) {}
+            pendingPermissionResult = null
+        }
+    }
+
+    override fun onPause() {
+        Log.d(TAG, "MainActivity.onPause")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        Log.d(TAG, "MainActivity.onStop")
+        AppLifecycle.onBackground()
+        super.onStop()
+    }
 
     override fun onDestroy() {
         Log.d(TAG, "MainActivity.onDestroy")
@@ -57,10 +80,8 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         Log.d(TAG, "configureFlutterEngine")
 
-        // ✅ تهيئة VpnStateBus
-        try { VpnStateBus.init(this) } catch (e: Throwable) {
-            Log.w(TAG, "VpnStateBus.init failed (ignored): ${e.message}")
-        }
+        // VpnStateBus مُهيأ في MyVpnApp — لكن نُكرر للأمان
+        try { VpnStateBus.init(this) } catch (_: Throwable) {}
 
         MethodChannel(engine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -80,9 +101,11 @@ class MainActivity : FlutterActivity() {
                             result.success(null)
                         }
                         "isConnected" -> {
-                            val running = MyVpnService.isRunning
-                            Log.d(TAG, "isConnected → $running")
-                            result.success(running)
+                            // ✅ state بدل isRunning
+                            val state = VpnStateBus.snapshot()["state"] as? String
+                            val connected = state == "connected"
+                            Log.d(TAG, "isConnected → $connected (state=$state)")
+                            result.success(connected)
                         }
                         "getState" -> {
                             val snapshot = VpnStateBus.snapshot()
@@ -94,8 +117,9 @@ class MainActivity : FlutterActivity() {
                             Log.d(TAG, "getPendingError → $err")
                             result.success(err)
                         }
-
-                        // ✅ سجل أخطاء الإشعارات
+                        "peekPendingError" -> {
+                            result.success(VpnStateBus.peekPendingError())
+                        }
                         "getNotificationErrorLog" -> {
                             val log = NotificationErrorLogger.readAll(this)
                             Log.d(TAG, "getNotificationErrorLog length=${log.length}")
@@ -106,7 +130,6 @@ class MainActivity : FlutterActivity() {
                             Log.d(TAG, "clearNotificationErrorLog done")
                             result.success(true)
                         }
-
                         "requestNotificationPermission" ->
                             handleRequestNotification(result)
                         "getAutostart" ->
@@ -147,12 +170,12 @@ class MainActivity : FlutterActivity() {
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
                     Log.d(TAG, "EventChannel onListen")
-                    VpnStateBus.sink = sink
-                    sink?.success(VpnStateBus.snapshot())
+                    // ✅ attachSink يرسل snapshot أولية ذرّياً
+                    VpnStateBus.attachSink(sink)
                 }
                 override fun onCancel(args: Any?) {
                     Log.d(TAG, "EventChannel onCancel")
-                    VpnStateBus.sink = null
+                    VpnStateBus.attachSink(null)
                 }
             })
     }
@@ -235,7 +258,6 @@ class MainActivity : FlutterActivity() {
         }
         Log.d(TAG, "connect args keys=${args.keys}")
 
-        // 1) فحص صلاحية VPN
         val prepareIntent = VpnService.prepare(this)
         if (prepareIntent != null) {
             Log.w(TAG, "connect called without VPN permission")
@@ -246,7 +268,6 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        // 2) فحص صلاحية الإشعارات قبل بدء الخدمة (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val notifGranted = ContextCompat.checkSelfPermission(
                 this, Manifest.permission.POST_NOTIFICATIONS
@@ -345,8 +366,6 @@ class MainActivity : FlutterActivity() {
                 result.success(true)
                 return
             }
-
-            // المحاولة الأولى: طلب استثناء مباشر
             try {
                 startActivity(
                     Intent(
@@ -360,8 +379,6 @@ class MainActivity : FlutterActivity() {
                 Log.w(TAG, "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS failed: ${e.message}", e)
                 NotificationErrorLogger.log(this, "handleBatteryOptimization/requestIgnore", e)
             }
-
-            // المحاولة الثانية: فتح قائمة التطبيقات في إعدادات البطارية
             try {
                 startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 result.success(true)
@@ -370,8 +387,6 @@ class MainActivity : FlutterActivity() {
                 Log.w(TAG, "IGNORE_BATTERY_OPTIMIZATION_SETTINGS failed: ${e.message}", e)
                 NotificationErrorLogger.log(this, "handleBatteryOptimization/settings", e)
             }
-
-            // المحاولة الثالثة: فتح إعدادات التطبيق مباشرة
             try {
                 startActivity(
                     Intent(
