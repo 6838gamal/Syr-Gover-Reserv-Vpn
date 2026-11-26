@@ -23,7 +23,6 @@ object VpnStateBus {
 
     fun init(ctx: Context) {
         appContext = ctx.applicationContext
-        // استعادة آخر configName بعد إعادة تشغيل التطبيق
         _configName = appContext
             ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.getString(KEY_LAST_CONFIG, null)
@@ -33,7 +32,6 @@ object VpnStateBus {
     fun snapshot(): Map<String, Any?> {
         val running = try { MyVpnService.isRunning } catch (_: Throwable) { false }
 
-        // لا نُعلن "connected" إلا إذا كانت الحالة الفعلية كذلك
         val actualState = when {
             !running && _state != "disconnected" -> "disconnected"
             else -> _state
@@ -55,7 +53,6 @@ object VpnStateBus {
             else -> _configName
         }
 
-        // تخطّى الإرسال إذا لم يتغير شيء (يمنع إعادة بناء الواجهة بلا داعٍ)
         if (state == _state && message == _message && newConfig == _configName) {
             Log.d(TAG, "emit skipped (no change): state=$state")
             return
@@ -66,7 +63,6 @@ object VpnStateBus {
         _message = message
         _configName = newConfig
 
-        // تحديث SharedPreferences (آمن من أي thread)
         val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (state == "error" && message != null) {
             prefs?.edit()?.putString(KEY_LAST_ERROR, message)?.apply()
@@ -77,7 +73,6 @@ object VpnStateBus {
             prefs?.edit()?.remove(KEY_LAST_CONFIG)?.apply()
         }
 
-        // إرسال إلى Flutter — يجب أن يكون على main thread
         mainHandler.post {
             try {
                 sink?.success(snapshot())
@@ -85,6 +80,23 @@ object VpnStateBus {
                 Log.w(TAG, "sink.success failed (sink likely closed): ${e.message}")
             }
         }
+    }
+
+    /// ✅ إرفاق sink مع إرسال حالة أولية (ذرّي)
+    fun attachSink(newSink: EventChannel.EventSink?) {
+        sink = newSink
+        if (newSink != null) {
+            val snap = snapshot()
+            mainHandler.post {
+                try { newSink.success(snap) } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    /// ✅ قراءة الخطأ المعلق بدون مسحه
+    fun peekPendingError(): String? {
+        return appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.getString(KEY_LAST_ERROR, null)
     }
 
     fun consumePendingError(): String? {
@@ -100,7 +112,6 @@ object VpnStateBus {
         _state = "disconnected"
         _message = null
         _configName = null
-        // امسح الحالة المحفوظة
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.edit()?.remove(KEY_LAST_ERROR)?.remove(KEY_LAST_CONFIG)?.apply()
 
