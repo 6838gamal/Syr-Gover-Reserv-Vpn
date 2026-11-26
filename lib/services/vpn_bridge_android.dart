@@ -15,6 +15,13 @@ class VpnException implements Exception {
 }
 
 class VpnBridgeAndroid implements VpnBridge {
+  // ------------------------------------------------------------------
+  // Singleton — يمنع إنشاء مستمعين متعددين لنفس EventChannel
+  // ------------------------------------------------------------------
+  static final VpnBridgeAndroid _instance = VpnBridgeAndroid._internal();
+  factory VpnBridgeAndroid() => _instance;
+  VpnBridgeAndroid._internal();
+
   static const _channel = MethodChannel('com.example.myvpn/vpn');
   static const _events = EventChannel('com.example.myvpn/vpn_events');
 
@@ -22,6 +29,15 @@ class VpnBridgeAndroid implements VpnBridge {
   VpnState _state = const VpnState();
   StreamSubscription? _eventSub;
   String? _lastKnownConfigName;
+
+  // --- حماية من التكرار ---
+  Timer? _kickDebounce;
+  DateTime _lastEventAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _eventThrottle = Duration(milliseconds: 300);
+  static const _kickDebounceDuration = Duration(seconds: 3);
+
+  bool _initialized = false;
+  bool _disposed = false;
 
   @override
   VpnState get currentState => _state;
@@ -35,6 +51,9 @@ class VpnBridgeAndroid implements VpnBridge {
 
   @override
   Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
+
     _eventSub = _events.receiveBroadcastStream().listen(
       _onNativeEvent,
       onError: (e, st) => _emitError('EventChannel error: $e'),
@@ -63,8 +82,17 @@ class VpnBridgeAndroid implements VpnBridge {
     } catch (_) {}
   }
 
+  // ------------------------------------------------------------------
+  // معالجة الأحداث مع throttle
+  // ------------------------------------------------------------------
+
   void _onNativeEvent(dynamic event) {
     if (event is! Map) return;
+
+    // throttle: تجاهل الأحداث المتقاربة جداً
+    final now = DateTime.now();
+    if (now.difference(_lastEventAt) < _eventThrottle) return;
+    _lastEventAt = now;
 
     final stateStr =
         (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
@@ -89,7 +117,9 @@ class VpnBridgeAndroid implements VpnBridge {
       connectedSince: nowConnected ? (prev.connectedSince ?? DateTime.now()) : null,
     );
 
-    _controller.add(_state);
+    if (!_disposed && !_controller.isClosed) {
+      _controller.add(_state);
+    }
   }
 
   VpnStatus _parseStatus(String? s) {
@@ -104,7 +134,9 @@ class VpnBridgeAndroid implements VpnBridge {
 
   void _emitError(String msg) {
     _state = VpnState(status: VpnStatus.error, errorMessage: msg);
-    _controller.add(_state);
+    if (!_disposed && !_controller.isClosed) {
+      _controller.add(_state);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -161,6 +193,8 @@ class VpnBridgeAndroid implements VpnBridge {
 
   @override
   Future<void> disconnect() async {
+    // إلغاء أي kick معلّق قبل قطع الاتصال
+    _kickDebounce?.cancel();
     try {
       await _channel.invokeMethod('disconnect');
       _lastKnownConfigName = null;
@@ -188,8 +222,20 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
+  /// ✅ debounce: لا نُعيد تشغيل النفق إلا بعد استقرار الشبكة
   @override
-  Future<void> onNetworkChanged() async => kick();
+  Future<void> onNetworkChanged() async {
+    // لا فائدة من kick إذا لم نكن متصلين
+    if (_state.status != VpnStatus.connected) return;
+
+    _kickDebounce?.cancel();
+    _kickDebounce = Timer(_kickDebounceDuration, () async {
+      // تحقق مجدداً قبل التنفيذ
+      if (_state.status == VpnStatus.connected) {
+        await kick();
+      }
+    });
+  }
 
   // ------------------------------------------------------------------
   // دوال Android-specific: Autostart
@@ -310,7 +356,17 @@ class VpnBridgeAndroid implements VpnBridge {
 
   @override
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+
+    _kickDebounce?.cancel();
+    _kickDebounce = null;
+
     _eventSub?.cancel();
-    _controller.close();
+    _eventSub = null;
+
+    if (!_controller.isClosed) {
+      _controller.close();
+    }
   }
 }
