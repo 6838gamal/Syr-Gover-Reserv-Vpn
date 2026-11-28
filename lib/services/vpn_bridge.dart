@@ -1,5 +1,6 @@
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
+import '../models/link_health.dart'; 
 
 class VpnException implements Exception {
   final String message;
