@@ -46,9 +46,14 @@ abstract class VpnBridge {
   /// هل النفق "مفتوح" من منظور النظام؟ (لا يعني أنه يمرر ترافيك)
   Future<bool> isConnected();
 
-  // ── صحة النفق — جديدة ───────────────────────────────────────
+  // ── صحة النفق ───────────────────────────────────────────────
   /// فحص سريع لصحة النفق (مثلاً ping داخل النفق، أو عدّاد bytes).
-  /// الافتراضي: يعتمد على isConnected() فقط (متوافق مع الجسور القديمة).
+  ///
+  /// ⚠️ التنفيذ الافتراضي ضعيف (يعتمد على isConnected فقط).
+  /// يُوصى بتجاوزه في كل تنفيذ فعلي للجسر:
+  /// - WireGuard: آخر handshake < 180s → good
+  /// - OpenVPN: byte counter يزداد → good
+  /// - Windows: ping داخل النفق → good
   Future<LinkHealth> probeHealth() async =>
       (await isConnected()) ? LinkHealth.good : LinkHealth.down;
 
@@ -56,23 +61,37 @@ abstract class VpnBridge {
   /// إن لم يدعمها، اتركه فارغاً والـ controller سيستعمل probeHealth().
   Stream<LinkHealth> get healthStream => const Stream.empty();
 
-  // ── تغيّر الشبكة — عقد موثّق ────────────────────────────────
+  // ── تغيّر الشبكة ────────────────────────────────────────────
   /// يُستدعى فقط عند تغيّر شبكة **حقيقي** (WiFi→LTE، عودة من انقطاع طويل).
-  /// - يجب أن يكون **idempotent**: نفس [networkKey] = لا شيء يحدث.
-  /// - يجب ألا يقطع الاتصال إن أمكن (WireGuard: تحديث endpoint فقط).
-  /// - OpenVPN قد يعيد الاتصال؛ هذا مقبول لكن يجب أن يعكس الحالة في stateStream.
+  ///
+  /// العقد:
+  /// - **idempotent**: نفس [networkKey] = لا شيء يحدث.
+  /// - **لا يقطع الاتصال** إن أمكن (WireGuard: تحديث endpoint فقط).
+  /// - OpenVPN قد يعيد الاتصال؛ مقبول لكن يجب أن ينعكس في [stateStream].
+  ///
+  /// مثال تنفيذ idempotent:
+  /// ```dart
+  /// String? _lastKey;
+  /// Future<void> onNetworkChanged({String? networkKey}) async {
+  ///   if (networkKey != null && networkKey == _lastKey) return;
+  ///   _lastKey = networkKey;
+  ///   await _methodChannel.invokeMethod('reconnect');
+  /// }
+  /// ```
   Future<void> onNetworkChanged({String? networkKey}) async {}
 
-  // ── Kill Switch — جديد ──────────────────────────────────────
+  // ── Kill Switch ─────────────────────────────────────────────
   /// عند التفعيل: يُمنع كل الترافيك عدا واجهة النفق.
   /// عند التعطيل: يُرفع المنع.
-  /// الافتراضي: لا يفعل شيئاً (الجسور التي لا تدعمه).
+  ///
+  /// يجب أن يكون idempotent — استدعاؤه مرتين بنفس القيمة = لا شيء.
+  /// التنفيذ الافتراضي no-op (للجسور التي لا تدعمه).
   Future<void> setKillSwitch(bool enabled) async {}
 
   /// هل الـ kill switch مفعّل حالياً على مستوى النظام؟
   Future<bool> isKillSwitchActive() async => false;
 
-  // ── إضافات موجودة ───────────────────────────────────────────
+  // ── إضافات ──────────────────────────────────────────────────
   Future<String> getNotificationErrorLog() async => '';
   Future<bool> clearNotificationErrorLog() async => false;
   Future<bool> isIgnoringBatteryOptimizations() async => false;
