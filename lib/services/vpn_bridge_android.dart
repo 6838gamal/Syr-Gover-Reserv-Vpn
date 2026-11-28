@@ -12,7 +12,7 @@ class VpnBridgeAndroid implements VpnBridge {
   static const _channel = MethodChannel('com.example.myvpn/vpn');
   static const _events = EventChannel('com.example.myvpn/vpn_events');
 
-  final _controller = StreamController<VpnState>.broadcast();
+  StreamController<VpnState> _controller = StreamController<VpnState>.broadcast();
   VpnState _state = const VpnState();
   StreamSubscription? _eventSub;
   String? _lastKnownConfigName;
@@ -23,11 +23,8 @@ class VpnBridgeAndroid implements VpnBridge {
   static const _kickDebounceDuration = Duration(seconds: 10);
 
   String? _lastNetworkKey;
-  DateTime _lastKickAt = DateTime.fromMillisecondsSinceEpoch(0);
-  static const _minKickInterval = Duration(seconds: 30);
 
   bool _permissionRequestInFlight = false;
-
   bool _initialized = false;
   bool _disposed = false;
 
@@ -64,21 +61,20 @@ class VpnBridgeAndroid implements VpnBridge {
   Future<void> _fetchPendingError() async {
     try {
       final err = await _channel.invokeMethod<String>('peekPendingError');
-      if (err != null && err.isNotEmpty && _state.status != VpnStatus.connected) {
+      if (err != null &&
+          err.isNotEmpty &&
+          _state.status != VpnStatus.connected) {
         _emitError(err);
       }
     } catch (_) {}
   }
 
-  // ------------------------------------------------------------------
-  // ✅ throttle ذكي: الحالات الحرجة تمر دائماً
-  // ------------------------------------------------------------------
-
   void _onNativeEvent(dynamic event, {bool force = false}) {
     if (event is! Map) return;
 
-    final stateStr =
-        (event['state'] as String?) ?? (event['status'] as String?) ?? 'disconnected';
+    final stateStr = (event['state'] as String?) ??
+        (event['status'] as String?) ??
+        'disconnected';
     final newStatus = _parseStatus(stateStr);
 
     final critical = newStatus == VpnStatus.connected ||
@@ -103,7 +99,8 @@ class VpnBridgeAndroid implements VpnBridge {
 
     _state = VpnState(
       status: newStatus,
-      errorMessage: newStatus == VpnStatus.error ? (message ?? prev.errorMessage) : null,
+      errorMessage:
+          newStatus == VpnStatus.error ? (message ?? prev.errorMessage) : null,
       activeConfigName: (newStatus == VpnStatus.disconnected)
           ? null
           : (configName ?? _lastKnownConfigName),
@@ -132,9 +129,9 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ------------------------------------------------------------------
+  // ============================================================
   // VpnBridge contract
-  // ------------------------------------------------------------------
+  // ============================================================
 
   @override
   Future<bool> requestPermission() async {
@@ -154,7 +151,9 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Future<bool> requestNotificationPermission() async {
     try {
-      return await _channel.invokeMethod<bool>('requestNotificationPermission') ?? true;
+      return await _channel
+              .invokeMethod<bool>('requestNotificationPermission') ??
+          true;
     } on PlatformException catch (e) {
       if (e.code == 'BUSY') return false;
       return true;
@@ -166,7 +165,6 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Future<void> connect(VpnConfig config) async {
     if (_state.status == VpnStatus.connecting) return;
-    // إذا متصل بنفس الإعدادات → تجاهل
     if (_state.status == VpnStatus.connected &&
         _state.activeConfigName == config.name) {
       return;
@@ -203,24 +201,22 @@ class VpnBridgeAndroid implements VpnBridge {
 
   Future<void> _waitForState(VpnStatus target, Duration timeout) async {
     if (_state.status == target) return;
+    final completer = Completer<void>();
+    late StreamSubscription sub;
+    sub = _controller.stream.listen((s) {
+      if (s.status == target && !completer.isCompleted) {
+        completer.complete();
+      }
+    });
     try {
-      await _controller.stream
-          .firstWhere((s) => s.status == target)
-          .timeout(timeout);
+      await completer.future.timeout(timeout);
     } catch (_) {
       _state = VpnState(status: target);
       if (!_disposed && !_controller.isClosed) {
         _controller.add(_state);
       }
-    }
-  }
-
-  @override
-  Future<void> kick() async {
-    try {
-      await _channel.invokeMethod('kick');
-    } on PlatformException catch (e) {
-      _emitError('kick failed: ${e.code} ${e.message}');
+    } finally {
+      await sub.cancel();
     }
   }
 
@@ -233,30 +229,72 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
+  // ── probeHealth ────────────────────────────────────────────
+  @override
+  Future<LinkHealth> probeHealth() async {
+    if (_state.status != VpnStatus.connected) return LinkHealth.down;
+    try {
+      final health = await _channel.invokeMethod<String>('probeHealth');
+      return switch (health) {
+        'good' => LinkHealth.good,
+        'suspect' => LinkHealth.suspect,
+        'down' => LinkHealth.down,
+        _ => LinkHealth.unknown,
+      };
+    } on PlatformException {
+      // fallback: لا نعلن down بدون دليل — قد يكون فشل channel
+      return LinkHealth.suspect;
+    } catch (_) {
+      return LinkHealth.suspect;
+    }
+  }
+
+  // ── onNetworkChanged (idempotent فقط) ──────────────────────
   @override
   Future<void> onNetworkChanged({String? networkKey}) async {
     if (_state.status != VpnStatus.connected) return;
-
-    // ✅ تجاهل نفس الشبكة
     if (networkKey != null && networkKey == _lastNetworkKey) return;
     _lastNetworkKey = networkKey;
-
-    // ✅ احترم الحد الأدنى بين kicks
-    final now = DateTime.now();
-    if (now.difference(_lastKickAt) < _minKickInterval) return;
 
     _kickDebounce?.cancel();
     _kickDebounce = Timer(_kickDebounceDuration, () async {
       if (_state.status == VpnStatus.connected) {
-        _lastKickAt = DateTime.now();
-        await kick();
+        await _invokeKick();
       }
     });
   }
 
-  // ------------------------------------------------------------------
-  // Autostart
-  // ------------------------------------------------------------------
+  Future<void> _invokeKick() async {
+    try {
+      await _channel.invokeMethod('kick');
+    } on PlatformException catch (e) {
+      _emitError('kick failed: ${e.code} ${e.message}');
+    }
+  }
+
+  // ── Kill Switch ────────────────────────────────────────────
+  @override
+  Future<void> setKillSwitch(bool enabled) async {
+    try {
+      await _channel.invokeMethod('setKillSwitch', {'enabled': enabled});
+    } on PlatformException catch (e) {
+      // لا نُفشل — الـ controller يتعامل مع الفشل بهدوء
+      _emitError('setKillSwitch failed: ${e.code} ${e.message}');
+    }
+  }
+
+  @override
+  Future<bool> isKillSwitchActive() async {
+    try {
+      return await _channel.invokeMethod<bool>('isKillSwitchActive') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ============================================================
+  // إضافات خاصة بـ Android (اختيارية — ليست في الواجهة)
+  // ============================================================
 
   Future<bool> isAutostartEnabled() async {
     try {
@@ -274,10 +312,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ------------------------------------------------------------------
-  // Settings
-  // ------------------------------------------------------------------
-
   Future<bool> openAlwaysOnSettings() async {
     try {
       return await _channel.invokeMethod<bool>('openAlwaysOnSettings') ?? false;
@@ -288,7 +322,9 @@ class VpnBridgeAndroid implements VpnBridge {
 
   Future<bool> requestBatteryOptimizationExemption() async {
     try {
-      return await _channel.invokeMethod<bool>('openBatteryOptimizationSettings') ?? false;
+      return await _channel
+              .invokeMethod<bool>('openBatteryOptimizationSettings') ??
+          false;
     } on PlatformException {
       return false;
     }
@@ -297,7 +333,9 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Future<bool> isIgnoringBatteryOptimizations() async {
     try {
-      return await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations') ?? false;
+      return await _channel
+              .invokeMethod<bool>('isIgnoringBatteryOptimizations') ??
+          false;
     } on PlatformException {
       return false;
     }
@@ -312,17 +350,21 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
+  @override
   Future<String> getNotificationErrorLog() async {
     try {
-      return await _channel.invokeMethod<String>('getNotificationErrorLog') ?? '';
+      return await _channel.invokeMethod<String>('getNotificationErrorLog') ??
+          '';
     } on PlatformException catch (e) {
       return 'فشل قراءة السجل: ${e.message}';
     }
   }
 
+  @override
   Future<bool> clearNotificationErrorLog() async {
     try {
-      return await _channel.invokeMethod<bool>('clearNotificationErrorLog') ?? false;
+      return await _channel.invokeMethod<bool>('clearNotificationErrorLog') ??
+          false;
     } on PlatformException {
       return false;
     }
@@ -347,10 +389,13 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
+  // ============================================================
+  // Dispose / Reset
+  // ============================================================
+
   @override
   void dispose() {
     if (_disposed) return;
-    // ✅ لا نغلق الـ singleton — فقط نلغي الاشتراك
     _disposed = true;
     _kickDebounce?.cancel();
     _kickDebounce = null;
@@ -361,7 +406,7 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  /// ✅ إعادة التهيئة (بدل dispose نهائي)
+  /// إعادة التهيئة (بدل dispose نهائي على singleton).
   Future<void> reset() async {
     _disposed = false;
     _initialized = false;
@@ -369,10 +414,13 @@ class VpnBridgeAndroid implements VpnBridge {
     _lastKnownConfigName = null;
     _lastNetworkKey = null;
     _lastEventAt = DateTime.fromMillisecondsSinceEpoch(0);
-    _lastKickAt = DateTime.fromMillisecondsSinceEpoch(0);
     _kickDebounce?.cancel();
     _kickDebounce = null;
     _eventSub?.cancel();
     _eventSub = null;
+    // أعد إنشاء controller إذا كان مغلقاً
+    if (_controller.isClosed) {
+      _controller = StreamController<VpnState>.broadcast();
+    }
   }
 }
