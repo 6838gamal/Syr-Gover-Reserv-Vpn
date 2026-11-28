@@ -11,6 +11,8 @@ import '../services/internet_check.dart';
 import '../services/session_persister.dart';
 import '../services/vpn_bridge.dart';
 
+enum LinkHealth { unknown, good, suspect, down }
+
 class VpnController extends ChangeNotifier {
   final VpnBridge bridge;
   final ConfigStore store = ConfigStore();
@@ -18,11 +20,44 @@ class VpnController extends ChangeNotifier {
 
   StreamSubscription<VpnState>? _stateSub;
   Timer? _networkWatchdog;
-  bool _wasConnectedBeforeOutage = false;
+
+  // ── عدّاد فشل متتالي بدل boolean هشّ ─────────────────────────
+  int _consecutiveFails = 0;
+  static const _failsBeforeSuspect = 1;
+  static const _failsBeforeDown = 3;   // 3×10s = 30s قبل إعلان الانقطاع
+
+  LinkHealth _linkHealth = LinkHealth.unknown;
+  LinkHealth get linkHealth => _linkHealth;
+  bool get isNetworkUntrusted => _linkHealth == LinkHealth.down;
+
+  DateTime? _outageStart;
+  DateTime? _lastKickAt;
+
+  // لا kick إلا إذا طال الانقطاع أو مرّ وقت كافٍ منذ آخر kick
+  static const _minKickInterval = Duration(seconds: 90);
+  static const _restartAfterOutage = Duration(seconds: 60);
+  static const _watchdogInterval = Duration(seconds: 10);
+
   bool _autoReconnectEnabled = true;
 
   // ✅ آخر حالة معروفة — لمقارنة refreshState الهادئ
   VpnStatus? _lastLoggedStatus;
+
+  // ── قفل تزامن لمنع اختناق الأحداث ────────────────────────────
+  Future<void> _opChain = Future.value();
+
+  Future<T> _serialize<T>(Future<T> Function() op) {
+    final prev = _opChain;
+    final completer = Completer<T>();
+    _opChain = prev.then((_) async {
+      try {
+        completer.complete(await op());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
 
   final List<VpnLog> _logs = [];
   List<VpnLog> get logs => List.unmodifiable(_logs);
@@ -68,8 +103,6 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// يطلب الحالة الحقيقية من الجسر.
-  /// ✅ هادئ: لا يسجّل شيئاً إن لم تتغيّر الحالة فعلياً.
   Future<void> refreshState() async {
     final before = state;
     await bridge.refreshState();
@@ -84,7 +117,6 @@ class VpnController extends ChangeNotifier {
       log('refreshState → ${after.status.name}');
       await restoreSession();
     }
-    // لا نُسجّل ولا نُنبّه إن لم يتغيّر شيء
   }
 
   // ------------------------- Logs -------------------------
@@ -120,7 +152,6 @@ class VpnController extends ChangeNotifier {
   // ------------------------- State events -------------------------
 
   void _onStateChanged(VpnState s) {
-    // ✅ نسجّل فقط عند تغيّر فعلي في الحالة (تفادي تكرار السجلات)
     if (_lastLoggedStatus != s.status || s.errorMessage != null) {
       log('state → ${s.status.name}'
           '${s.errorMessage != null ? " (${s.errorMessage})" : ""}');
@@ -128,11 +159,15 @@ class VpnController extends ChangeNotifier {
     }
 
     if (s.status == VpnStatus.connected) {
-      _wasConnectedBeforeOutage = true;
       _persistSession();
+      // عند الاتصال، اضبط الحالة على good إن لم نكن في انقطاع
+      if (_linkHealth == LinkHealth.unknown) {
+        _linkHealth = LinkHealth.good;
+      }
+    } else if (s.status == VpnStatus.disconnected ||
+        s.status == VpnStatus.error) {
+      _resetHealth();
     }
-    // ⚠️ لا نمسح الجلسة هنا — نتركها لـ disconnect() الصريح
-    // (حتى لا تُفقد connectedSince عند انقطاع لحظي/إعادة اتصال تلقائي)
 
     notifyListeners();
   }
@@ -150,23 +185,97 @@ class VpnController extends ChangeNotifier {
 
   void _startNetworkWatchdog() {
     _networkWatchdog?.cancel();
-    _networkWatchdog = Timer.periodic(const Duration(seconds: 10), (_) async {
-      if (!_autoReconnectEnabled) return;
-      if (state.status != VpnStatus.connected) return;
-      if (!_wasConnectedBeforeOutage) return;
-      final online = await hasInternet();
-      if (!online) return;
-      try {
-        await bridge.onNetworkChanged();
-      } catch (e) {
-        log('watchdog error: $e', level: LogLevel.error);
-      }
+    _networkWatchdog = Timer.periodic(_watchdogInterval, (_) async {
+      await _serialize(_tickWatchdog);
     });
+  }
+
+  Future<void> _tickWatchdog() async {
+    if (!_autoReconnectEnabled) return;
+    if (state.status != VpnStatus.connected) {
+      // لسنا متصلين → أعد ضبط الصحة كي يبدأ العد من جديد عند الاتصال
+      _resetHealth();
+      return;
+    }
+
+    final online = await hasInternet();
+    final now = DateTime.now();
+
+    if (!online) {
+      _consecutiveFails++;
+      if (_consecutiveFails >= _failsBeforeDown) {
+        if (_linkHealth != LinkHealth.down) {
+          _linkHealth = LinkHealth.down;
+          _outageStart = now;
+          log('network DOWN (fails=$_consecutiveFails)',
+              level: LogLevel.warn);
+          notifyListeners();
+        }
+      } else if (_consecutiveFails >= _failsBeforeSuspect &&
+          _linkHealth == LinkHealth.good) {
+        _linkHealth = LinkHealth.suspect;
+        log('network suspect (fails=$_consecutiveFails)',
+            level: LogLevel.warn);
+        notifyListeners();
+      }
+      return;
+    }
+
+    // الإنترنت موجود الآن
+    _consecutiveFails = 0;
+
+    if (_linkHealth == LinkHealth.down) {
+      final outage = _outageStart != null
+          ? now.difference(_outageStart!)
+          : Duration.zero;
+      _outageStart = null;
+      _linkHealth = LinkHealth.good;
+
+      // ⚠️ kick فقط إذا طال الانقطاع
+      if (outage >= _restartAfterOutage && _canKick()) {
+        _lastKickAt = now;
+        log('long outage (${outage.inSeconds}s) → restarting tunnel',
+            level: LogLevel.warn);
+        try {
+          await bridge.onNetworkChanged();
+        } catch (e) {
+          log('restart failed: $e', level: LogLevel.error);
+        }
+      } else {
+        log('network restored after ${outage.inSeconds}s — no restart',
+            level: LogLevel.info);
+      }
+      notifyListeners();
+    } else if (_linkHealth != LinkHealth.good) {
+      _linkHealth = LinkHealth.good;
+      notifyListeners();
+    }
+    // الإنترنت موجود باستمرار → لا kick، لا log
+  }
+
+  void _resetHealth() {
+    if (_consecutiveFails != 0 ||
+        _linkHealth == LinkHealth.down ||
+        _linkHealth == LinkHealth.suspect) {
+      _consecutiveFails = 0;
+      _linkHealth = LinkHealth.good;
+      _outageStart = null;
+      notifyListeners();
+    }
+  }
+
+  bool _canKick() {
+    if (_lastKickAt == null) return true;
+    return DateTime.now().difference(_lastKickAt!) >= _minKickInterval;
   }
 
   // ------------------------- Connect / Disconnect -------------------------
 
-  Future<bool> connect(VpnConfig config) async {
+  Future<bool> connect(VpnConfig config) {
+    return _serialize(() => _doConnect(config));
+  }
+
+  Future<bool> _doConnect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
 
     try {
@@ -201,6 +310,7 @@ class VpnController extends ChangeNotifier {
           throw TimeoutException('connect timeout');
         },
       );
+      _resetHealth();
       log('connect() returned');
       return true;
     } on PlatformException catch (e) {
@@ -214,23 +324,25 @@ class VpnController extends ChangeNotifier {
     }
   }
 
-  Future<void> disconnect() async {
-    log('disconnect requested');
-    _wasConnectedBeforeOutage = false;
-    try {
-      await bridge.disconnect().timeout(const Duration(seconds: 10));
-    } catch (e) {
-      log('disconnect error: $e', level: LogLevel.error);
-    }
-    await _session.clear();
-    log('session cleared');
+  Future<void> disconnect() {
+    return _serialize(() async {
+      log('disconnect requested');
+      _resetHealth();
+      try {
+        await bridge.disconnect().timeout(const Duration(seconds: 10));
+      } catch (e) {
+        log('disconnect error: $e', level: LogLevel.error);
+      }
+      await _session.clear();
+      log('session cleared');
+    });
   }
 
   @override
   void dispose() {
     _networkWatchdog?.cancel();
     _stateSub?.cancel();
-    bridge.dispose();
+    // ❌ لا تنادِ bridge.dispose() — الـ singleton يُعاش
     super.dispose();
   }
 }
