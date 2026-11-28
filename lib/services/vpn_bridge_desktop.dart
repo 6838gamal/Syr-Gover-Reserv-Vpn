@@ -622,7 +622,12 @@ class VpnBridgeDesktop implements VpnBridge {
   @override
   Future<void> onNetworkChanged({String? networkKey}) async {
     if (_state.status != VpnStatus.connected) return;
-    await _invokeKick();
+    _kickDebounce?.cancel();
+    _kickDebounce = Timer(_kickDebounceDuration, () async {
+      if (_state.status == VpnStatus.connected) {
+        await _invokeKick();
+      }
+    });
   }
 
   Future<void> _invokeKick() async {
@@ -665,7 +670,7 @@ class VpnBridgeDesktop implements VpnBridge {
   }
 
   // ==================================================================
-  // isConnected / probeHealth
+  // isConnected / probeHealth / healthStream
   // ==================================================================
 
   @override
@@ -712,6 +717,10 @@ class VpnBridgeDesktop implements VpnBridge {
 
     return LinkHealth.good;
   }
+
+  // ✅ التنفيذ الصريح المطلوب لـ implements VpnBridge
+  @override
+  Stream<LinkHealth> get healthStream => const Stream.empty();
 
   // ==================================================================
   // Kill Switch
