@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
@@ -5,12 +7,12 @@ import 'vpn_bridge.dart';
 /// جسر آمن للمنصات غير المدعومة (iOS حالياً).
 /// كل الدوال تعيد false بدلاً من crash، ولا تنفذ أي عملية نظام.
 class VpnBridgeStub implements VpnBridge {
-  VpnState _state = VpnState.initial();
+  VpnState _state = const VpnState(status: VpnStatus.disconnected);
   final _controller = StreamController<VpnState>.broadcast();
 
   @override
   Future<void> init() async {
-    _emit(_state.copyWith(
+    _emit(const VpnState(
       status: VpnStatus.disconnected,
       errorMessage: 'VPN not supported on this platform',
     ));
@@ -18,7 +20,7 @@ class VpnBridgeStub implements VpnBridge {
 
   @override
   void dispose() {
-    _controller.close();
+    if (!_controller.isClosed) _controller.close();
   }
 
   @override
@@ -29,8 +31,10 @@ class VpnBridgeStub implements VpnBridge {
 
   @override
   Future<void> connect(VpnConfig config) async {
-    throw VpnException('VPN not supported on this platform',
-        code: 'UNSUPPORTED');
+    throw VpnException(
+      'VPN not supported on this platform',
+      code: 'UNSUPPORTED',
+    );
   }
 
   @override
@@ -51,10 +55,11 @@ class VpnBridgeStub implements VpnBridge {
   @override
   Future<LinkHealth> probeHealth() async => LinkHealth.down;
 
-  // كل الإضافات الافتراضية كافية (no-op / false)
+  // Autostart / Always-on / Kill Switch — الافتراضيات كافية
+  // (getAutostart → false، setAutostart → no-op، إلخ)
 
   void _emit(VpnState s) {
     _state = s;
-    _controller.add(s);
+    if (!_controller.isClosed) _controller.add(s);
   }
 }
