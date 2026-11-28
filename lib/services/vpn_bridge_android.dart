@@ -13,7 +13,6 @@ class VpnBridgeAndroid implements VpnBridge {
   static const _channel = MethodChannel('com.example.myvpn/vpn');
   static const _events = EventChannel('com.example.myvpn/vpn_events');
 
-  // غير final — نعيد إنشاءه في reset() بعد dispose
   StreamController<VpnState> _controller =
       StreamController<VpnState>.broadcast();
 
@@ -29,7 +28,6 @@ class VpnBridgeAndroid implements VpnBridge {
   String? _lastNetworkKey;
 
   bool _permissionRequestInFlight = false;
-
   bool _initialized = false;
   bool _disposed = false;
 
@@ -39,15 +37,10 @@ class VpnBridgeAndroid implements VpnBridge {
   @override
   Stream<VpnState> get stateStream => _controller.stream;
 
-  // ==================================================================
-  // init / refreshState
-  // ==================================================================
-
   @override
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
-
     _eventSub = _events.receiveBroadcastStream().listen(
       _onNativeEvent,
       onError: (e, st) => _emitError('EventChannel error: $e'),
@@ -77,10 +70,6 @@ class VpnBridgeAndroid implements VpnBridge {
       }
     } catch (_) {}
   }
-
-  // ==================================================================
-  // أحداث الحالة
-  // ==================================================================
 
   void _onNativeEvent(dynamic event, {bool force = false}) {
     if (event is! Map) return;
@@ -143,10 +132,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ==================================================================
-  // الصلاحيات
-  // ==================================================================
-
   @override
   Future<bool> requestPermission() async {
     if (_permissionRequestInFlight) return false;
@@ -175,10 +160,6 @@ class VpnBridgeAndroid implements VpnBridge {
       return true;
     }
   }
-
-  // ==================================================================
-  // الاتصال
-  // ==================================================================
 
   @override
   Future<void> connect(VpnConfig config) async {
@@ -247,10 +228,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ==================================================================
-  // صحة النفق
-  // ==================================================================
-
   @override
   Future<LinkHealth> probeHealth() async {
     if (_state.status != VpnStatus.connected) return LinkHealth.down;
@@ -263,16 +240,11 @@ class VpnBridgeAndroid implements VpnBridge {
         _ => LinkHealth.unknown,
       };
     } on PlatformException {
-      // fallback: لا نعلن down بدون دليل
       return LinkHealth.suspect;
     } catch (_) {
       return LinkHealth.suspect;
     }
   }
-
-  // ==================================================================
-  // تغيّر الشبكة
-  // ==================================================================
 
   @override
   Future<void> onNetworkChanged({String? networkKey}) async {
@@ -296,10 +268,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ==================================================================
-  // Kill Switch
-  // ==================================================================
-
   @override
   Future<void> setKillSwitch(bool enabled) async {
     try {
@@ -318,10 +286,7 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ==================================================================
-  // Autostart / Always-on
-  // ==================================================================
-
+  // ── Autostart / Always-on ─────────────────────────────────────
   @override
   Future<bool> getAutostart() async {
     try {
@@ -360,10 +325,7 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ==================================================================
-  // إضافات
-  // ==================================================================
-
+  // ── إضافات ──────────────────────────────────────────────────
   @override
   Future<bool> isIgnoringBatteryOptimizations() async {
     try {
@@ -423,10 +385,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  // ==================================================================
-  // Dispose / Reset
-  // ==================================================================
-
   @override
   void dispose() {
     if (_disposed) return;
@@ -440,7 +398,6 @@ class VpnBridgeAndroid implements VpnBridge {
     }
   }
 
-  /// إعادة التهيئة (بدل dispose نهائي على singleton).
   Future<void> reset() async {
     _disposed = false;
     _initialized = false;
