@@ -33,25 +33,35 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       # ============================================================
-      # 3) تجهيز Flutter
+      # 3) تجهيز Flutter — مع cache: false (بناء نظيف)
       # ============================================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.27.0'
           channel: 'stable'
-          cache: true
+          cache: false                    # ← عطّل الكاش لمنع استخدام .dart_tool قديم
 
       # ============================================================
-      # 4) pubspec
+      # 4) flutter clean — قبل أي شيء آخر
+      # ============================================================
+      - name: Clean Flutter
+        run: flutter clean
+
+      # ============================================================
+      # 5) pubspec — نسخ pubspec_desktop.yaml
       # ============================================================
       - name: Use pubspec_desktop.yaml as pubspec.yaml
         shell: pwsh
         run: |
           if (-not (Test-Path "pubspec_desktop.yaml")) { Write-Error "pubspec_desktop.yaml not found!"; exit 1 }
           Copy-Item -Path "pubspec_desktop.yaml" -Destination "pubspec.yaml" -Force
+          Write-Host "--- pubspec.yaml ---"
           Get-Content pubspec.yaml
 
+      # ============================================================
+      # 6) جلب التبعيات
+      # ============================================================
       - name: Get dependencies
         run: flutter pub get
 
@@ -59,7 +69,7 @@ jobs:
         run: flutter config --enable-windows-desktop
 
       # ============================================================
-      # 5) WINDOWS_KEY.txt من Secret
+      # 7) WINDOWS_KEY.txt من Secret
       # ============================================================
       - name: Write WINDOWS_KEY.txt from secret
         shell: pwsh
@@ -75,7 +85,7 @@ jobs:
           }
 
       # ============================================================
-      # 6) التحقق أن manifest ليس في add_executable
+      # 8) التحقق أن manifest ليس في add_executable
       # ============================================================
       - name: Ensure manifest is NOT in add_executable
         shell: pwsh
@@ -90,7 +100,7 @@ jobs:
           Write-Host "✅ runner.exe.manifest not in add_executable."
 
       # ============================================================
-      # 7) التحقق من manifest + تحديد mt.exe
+      # 9) التحقق من manifest + تحديد mt.exe
       # ============================================================
       - name: Validate manifest source and locate mt.exe
         shell: pwsh
@@ -103,8 +113,6 @@ jobs:
             Write-Error "❌ BOM detected in manifest"; exit 1
           }
           Write-Host "✅ No BOM detected."
-          Write-Host "--- runner.exe.manifest ---"
-          Get-Content $manifest -Raw
 
           $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           if (-not (Test-Path $sdkRoot)) { Write-Error "❌ Windows Kits bin not found at $sdkRoot"; exit 1 }
@@ -124,16 +132,24 @@ jobs:
           Write-Host "✅ Manifest is valid."
 
       # ============================================================
-      # 8) تنظيف build
+      # 10) تنظيف شامل قبل البناء — build + .dart_tool + pubspec.lock
       # ============================================================
       - name: Clean build directory
         shell: pwsh
         run: |
           if (Test-Path build) { Remove-Item -Recurse -Force build }
-          Write-Host "✅ build directory cleaned."
+          if (Test-Path .dart_tool) { Remove-Item -Recurse -Force .dart_tool }
+          if (Test-Path pubspec.lock) { Remove-Item -Force pubspec.lock }
+          Write-Host "✅ build, .dart_tool, pubspec.lock cleaned."
 
       # ============================================================
-      # 9) بناء Release
+      # 11) إعادة pub get بعد التنظيف (لتوليد .dart_tool و pubspec.lock)
+      # ============================================================
+      - name: Get dependencies (after clean)
+        run: flutter pub get
+
+      # ============================================================
+      # 12) بناء Release
       # ============================================================
       - name: Build Windows Release
         shell: pwsh
@@ -143,8 +159,7 @@ jobs:
           flutter build windows --release
 
       # ============================================================
-      # 10) تضمين manifest في EXE (post-build)
-      #     ★ إصلاح: ;#1 داخل علامات الاقتباس
+      # 13) تضمين manifest في EXE (post-build)
       # ============================================================
       - name: Embed manifest into EXE
         shell: pwsh
@@ -163,14 +178,12 @@ jobs:
           if (-not $mt -or -not (Test-Path $mt)) { Write-Error "❌ MT_EXE not set or file missing: $mt"; exit 1 }
           Write-Host "Using mt.exe: $mt"
 
-          # ★ ;#1 داخل السلسلة
           & $mt -manifest "windows\runner\runner.exe.manifest" -outputresource:"$($exe.FullName);#1"
           if ($LASTEXITCODE -ne 0) { Write-Error "❌ mt.exe failed (exit $LASTEXITCODE)"; exit 1 }
           Write-Host "✅ Manifest embedded into EXE."
 
       # ============================================================
-      # 11) التحقق من manifest داخل EXE
-      #     ★ إصلاح: ;#1 داخل علامات الاقتباس
+      # 14) التحقق من manifest داخل EXE
       # ============================================================
       - name: Verify manifest in EXE
         shell: pwsh
@@ -183,7 +196,6 @@ jobs:
           $mt = $env:MT_EXE
           if (-not $mt -or -not (Test-Path $mt)) { Write-Error "❌ MT_EXE not set"; exit 1 }
 
-          # ★ ;#1 داخل السلسلة
           & $mt -inputresource:"$($exe.FullName);#1" -out:extracted.manifest
           if ($LASTEXITCODE -ne 0) { Write-Error "❌ Failed to extract manifest (exit $LASTEXITCODE)"; exit 1 }
 
@@ -197,7 +209,7 @@ jobs:
           Write-Host "✅ requireAdministrator confirmed."
 
       # ============================================================
-      # 12) رفع سجلات عند الفشل
+      # 15) رفع سجلات عند الفشل
       # ============================================================
       - name: Upload build logs on failure
         if: failure()
@@ -212,7 +224,7 @@ jobs:
           retention-days: 7
 
       # ============================================================
-      # 13) رفع raw build
+      # 16) رفع raw build
       # ============================================================
       - name: Upload raw Windows build
         uses: actions/upload-artifact@v4
@@ -223,7 +235,7 @@ jobs:
           if-no-files-found: warn
 
       # ============================================================
-      # 14) Inno Setup
+      # 17) Inno Setup
       # ============================================================
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
