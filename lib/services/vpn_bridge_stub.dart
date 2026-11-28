@@ -3,7 +3,7 @@ import 'dart:async';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
-import '../models/link_health.dart'; 
+import '../models/link_health.dart';
 
 /// جسر آمن للمنصات غير المدعومة (iOS حالياً).
 /// كل الدوال تعيد false بدلاً من crash، ولا تنفذ أي عملية نظام.
@@ -55,6 +55,10 @@ class VpnBridgeStub implements VpnBridge {
 
   @override
   Future<LinkHealth> probeHealth() async => LinkHealth.down;
+
+  // ✅ التنفيذ الصريح المطلوب لـ implements VpnBridge
+  @override
+  Stream<LinkHealth> get healthStream => const Stream.empty();
 
   // Autostart / Always-on / Kill Switch — الافتراضيات كافية
   // (getAutostart → false، setAutostart → no-op، إلخ)
