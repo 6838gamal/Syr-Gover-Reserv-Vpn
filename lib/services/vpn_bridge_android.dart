@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
-import '../models/link_health.dart'; 
+import '../models/link_health.dart';
 
 class VpnBridgeAndroid implements VpnBridge {
   static final VpnBridgeAndroid _instance = VpnBridgeAndroid._internal();
@@ -246,6 +246,10 @@ class VpnBridgeAndroid implements VpnBridge {
       return LinkHealth.suspect;
     }
   }
+
+  // ✅ التنفيذ الصريح المطلوب لـ implements VpnBridge
+  @override
+  Stream<LinkHealth> get healthStream => const Stream.empty();
 
   @override
   Future<void> onNetworkChanged({String? networkKey}) async {
