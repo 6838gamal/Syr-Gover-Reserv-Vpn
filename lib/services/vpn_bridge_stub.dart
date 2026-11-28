@@ -11,6 +11,10 @@ class VpnBridgeStub implements VpnBridge {
   VpnState _state = const VpnState(status: VpnStatus.disconnected);
   final _controller = StreamController<VpnState>.broadcast();
 
+  // ------------------------------------------------------------------
+  // دورة الحياة
+  // ------------------------------------------------------------------
+
   @override
   Future<void> init() async {
     _emit(const VpnState(
@@ -24,11 +28,19 @@ class VpnBridgeStub implements VpnBridge {
     if (!_controller.isClosed) _controller.close();
   }
 
+  // ------------------------------------------------------------------
+  // الصلاحيات
+  // ------------------------------------------------------------------
+
   @override
   Future<bool> requestPermission() async => false;
 
   @override
   Future<bool> requestNotificationPermission() async => false;
+
+  // ------------------------------------------------------------------
+  // الاتصال
+  // ------------------------------------------------------------------
 
   @override
   Future<void> connect(VpnConfig config) async {
@@ -40,6 +52,10 @@ class VpnBridgeStub implements VpnBridge {
 
   @override
   Future<void> disconnect() async {}
+
+  // ------------------------------------------------------------------
+  // الحالة
+  // ------------------------------------------------------------------
 
   @override
   Stream<VpnState> get stateStream => _controller.stream;
@@ -53,15 +69,74 @@ class VpnBridgeStub implements VpnBridge {
   @override
   Future<bool> isConnected() async => false;
 
+  // ------------------------------------------------------------------
+  // صحة النفق
+  // ------------------------------------------------------------------
+
   @override
   Future<LinkHealth> probeHealth() async => LinkHealth.down;
 
-  // ✅ التنفيذ الصريح المطلوب لـ implements VpnBridge
   @override
   Stream<LinkHealth> get healthStream => const Stream.empty();
 
-  // Autostart / Always-on / Kill Switch — الافتراضيات كافية
-  // (getAutostart → false، setAutostart → no-op، إلخ)
+  // ------------------------------------------------------------------
+  // تغيّر الشبكة
+  // ------------------------------------------------------------------
+
+  @override
+  Future<void> onNetworkChanged({String? networkKey}) async {}
+
+  // ------------------------------------------------------------------
+  // Kill Switch
+  // ------------------------------------------------------------------
+
+  @override
+  Future<void> setKillSwitch(bool enabled) async {}
+
+  @override
+  Future<bool> isKillSwitchActive() async => false;
+
+  // ------------------------------------------------------------------
+  // Autostart / Always-on
+  // ------------------------------------------------------------------
+
+  @override
+  Future<bool> getAutostart() async => false;
+
+  @override
+  Future<void> setAutostart(bool enabled) async {}
+
+  @override
+  Future<bool> openAlwaysOnSettings() async => false;
+
+  @override
+  Future<bool> requestBatteryOptimizationExemption() async => false;
+
+  // ------------------------------------------------------------------
+  // إضافات
+  // ------------------------------------------------------------------
+
+  @override
+  Future<String> getNotificationErrorLog() async => '';
+
+  @override
+  Future<bool> clearNotificationErrorLog() async => false;
+
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() async => false;
+
+  @override
+  Future<bool> openAppSettings() async => false;
+
+  @override
+  Future<Map<String, dynamic>?> getLastConfig() async => null;
+
+  @override
+  Future<void> clearLastConfig() async {}
+
+  // ------------------------------------------------------------------
+  // دوال مساعدة
+  // ------------------------------------------------------------------
 
   void _emit(VpnState s) {
     _state = s;
