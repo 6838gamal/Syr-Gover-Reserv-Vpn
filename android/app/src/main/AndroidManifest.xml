@@ -5,13 +5,21 @@
     <!-- الإنترنت والشبكة -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+    <!-- لقراءة SSID للشبكة الحالية (network_info_plus) -->
+    <!-- Android ≤ 12 -->
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <!-- Android 13+ -->
+    <uses-permission android:name="android.permission.NEAREST_WIFI_DEVICES" />
 
     <!-- الخدمة في المقدمة (VPN) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <!-- احتياط لبعض أجهزة Android 14 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!-- الإشعارات (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -24,6 +32,19 @@
 
     <!-- إعادة التشغيل التلقائي -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- ==================== queries (Android 11+) ==================== -->
+
+    <queries>
+        <!-- لفتح إعدادات التطبيق عبر openAppSettings() -->
+        <intent>
+            <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
+        </intent>
+        <!-- للتحقق من حالة إعدادات VPN في النظام -->
+        <intent>
+            <action android:name="android.net.VpnService" />
+        </intent>
+    </queries>
 
     <!-- ==================== التطبيق ==================== -->
 
