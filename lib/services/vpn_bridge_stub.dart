@@ -3,6 +3,7 @@ import 'dart:async';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
+import '../models/link_health.dart'; 
 
 /// جسر آمن للمنصات غير المدعومة (iOS حالياً).
 /// كل الدوال تعيد false بدلاً من crash، ولا تنفذ أي عملية نظام.
