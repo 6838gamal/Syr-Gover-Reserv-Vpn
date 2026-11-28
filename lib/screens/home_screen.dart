@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../main.dart';
+import '../controllers/vpn_controller.dart';   // ← بدل ../main.dart
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'import_screen.dart';
@@ -22,9 +22,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   VpnConfig? _selected;
   bool _loading = true;
 
-  // ✅ اشتراك احتياطي مباشر على بثّ الحالة (شبكة أمان مزدوجة مع provider)
-  StreamSubscription<VpnState>? _stateSub;
-
   @override
   void initState() {
     super.initState();
@@ -34,29 +31,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (!mounted) return;
 
       final ctrl = context.read<VpnController>();
-
       // جلب أولي للحالة الحقيقية من Kotlin
       await ctrl.refreshState();
-
-      // ✅ استماع دائم لكل تغيير قادم من Kotlin
-      //   (بجانب context.watch الذي يعتمد على notifyListeners)
-      _stateSub?.cancel();
-      _stateSub = ctrl.bridge.stateStream.listen((_) {
-        if (mounted) setState(() {});
-      });
     });
   }
 
   @override
   void dispose() {
-    _stateSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // ✅ عند العودة للتطبيق: refreshState هادئ (لا يسجّل إن لم يتغيّر شيء)
     if (state == AppLifecycleState.resumed) {
       context.read<VpnController>().refreshState();
     }
@@ -178,20 +165,47 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _StatusCard(state: state),
-                  const SizedBox(height: 20),
-                  _buildConfigPicker(enabled: !busy),
-                  const SizedBox(height: 16),
-                  if (_selected != null) _buildDetails(_selected!),
-                  const Spacer(),
-                  _buildMainButton(state, busy),
-                ],
-              ),
+          : Column(
+              children: [
+                // ✅ بانر "الشبكة غير موثوقة"
+                if (ctrl.isNetworkUntrusted)
+                  Container(
+                    width: double.infinity,
+                    color: Colors.orange.shade900,
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 10, horizontal: 16),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.wifi_off, color: Colors.white),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'الشبكة غير موثوقة — التصفّح محجوب حتى يتم التحقق من الاتصال',
+                            style:
+                                TextStyle(color: Colors.white, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _StatusCard(state: state),
+                        const SizedBox(height: 20),
+                        _buildConfigPicker(enabled: !busy),
+                        const SizedBox(height: 16),
+                        if (_selected != null) _buildDetails(_selected!),
+                        const Spacer(),
+                        _buildMainButton(state, busy),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
     );
   }
@@ -280,14 +294,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Widget _buildMainButton(VpnState state, bool busy) {
     final connected = state.status == VpnStatus.connected;
     final noConfig = _selected == null;
+    final label = connected
+        ? 'قطع الاتصال'
+        : (busy
+            ? (state.status == VpnStatus.connecting
+                ? 'جارٍ الاتصال...'
+                : 'جارٍ القطع...')
+            : 'اتصال');
 
     return FilledButton.icon(
       onPressed: (busy || (noConfig && !connected)) ? null : _toggle,
-      icon: Icon(connected ? Icons.stop : Icons.play_arrow),
-      label: Text(
-        connected ? 'قطع الاتصال' : 'اتصال',
-        style: const TextStyle(fontSize: 16),
+      icon: Icon(
+        connected
+            ? Icons.stop
+            : (busy ? Icons.hourglass_top : Icons.play_arrow),
       ),
+      label: Text(label, style: const TextStyle(fontSize: 16)),
       style: FilledButton.styleFrom(
         padding: const EdgeInsets.symmetric(vertical: 18),
         backgroundColor: connected ? Colors.redAccent : null,
