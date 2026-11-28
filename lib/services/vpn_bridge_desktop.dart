@@ -6,25 +6,14 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
-import 'vpn_bridge.dart'; // VpnException, LinkHealth
+import 'vpn_bridge.dart';
 
 /// جسر VPN لسطح المكتب (Windows / Linux / macOS)
-/// يعتمد على أدوات WireGuard النظامية (wireguard.exe أو wg-quick).
-///
-/// ملاحظات مهمة:
-/// - لا نعتمد على ظهور أيقونة system tray إطلاقاً؛ النجاح يُقاس بوجود
-///   خدمة/واجهة النفق فعلياً (sc query على Windows، ip link على Linux).
-/// - عند فشل أي أمر، نطبع stderr الحقيقي ونمرره في رسالة الخطأ.
-/// - كشف الأدوات يتم عبر requestPermission() برسائل توجيه واضحة.
 class VpnBridgeDesktop implements VpnBridge {
-  // ------------------------------------------------------------------
-  // Singleton — يمنع إنشاء نسخ متعددة
-  // ------------------------------------------------------------------
   static final VpnBridgeDesktop _instance = VpnBridgeDesktop._internal();
   factory VpnBridgeDesktop() => _instance;
   VpnBridgeDesktop._internal();
 
-  // غير final — نعيد إنشاءه في reset() بعد dispose
   StreamController<VpnState> _controller =
       StreamController<VpnState>.broadcast();
 
@@ -46,8 +35,6 @@ class VpnBridgeDesktop implements VpnBridge {
   bool get _isWindows => Platform.isWindows;
   bool get _isLinux => Platform.isLinux;
   bool get _isMacOS => Platform.isMacOS;
-
-  /// هل نحن على منصة سطح مكتب حقيقية (وليس iOS/Android)؟
   bool get _isRealDesktop => _isWindows || _isLinux || _isMacOS;
 
   @override
@@ -70,7 +57,6 @@ class VpnBridgeDesktop implements VpnBridge {
       return;
     }
 
-    // محاولة استعادة نفق يعمل من جلسة سابقة
     try {
       final saved = await getLastConfig();
       if (saved != null) {
@@ -91,9 +77,7 @@ class VpnBridgeDesktop implements VpnBridge {
           return;
         }
       }
-    } catch (_) {
-      // تجاهل — سنبدأ disconnected
-    }
+    } catch (_) {}
 
     _emit(const VpnState(status: VpnStatus.disconnected));
   }
@@ -118,7 +102,7 @@ class VpnBridgeDesktop implements VpnBridge {
   }
 
   // ==================================================================
-  // requestPermission — كشف دقيق مع رسائل توجيه
+  // requestPermission
   // ==================================================================
 
   @override
@@ -139,7 +123,6 @@ class VpnBridgeDesktop implements VpnBridge {
       return true;
     }
 
-    // Linux / macOS
     final ok = await _which('wg-quick');
     if (!ok) {
       final hint = _isLinux
@@ -183,7 +166,7 @@ class VpnBridgeDesktop implements VpnBridge {
   Future<bool> requestNotificationPermission() async => true;
 
   // ==================================================================
-  // connect — public wrapper + _doConnect (مع fromWatchdog)
+  // connect
   // ==================================================================
 
   @override
@@ -214,7 +197,6 @@ class VpnBridgeDesktop implements VpnBridge {
     ));
 
     try {
-      // 1) تأكد من وجود الأدوات
       final ready = await requestPermission();
       if (!ready) {
         _stopWatchdog();
@@ -224,7 +206,6 @@ class VpnBridgeDesktop implements VpnBridge {
         );
       }
 
-      // 2) اكتب ملف الـ conf (فقط إذا لم يكن موجوداً أو تغيّر)
       final dir = await getApplicationSupportDirectory();
       _confPath = p.join(dir.path, '${config.name}.conf');
       final confFile = File(_confPath!);
@@ -233,7 +214,6 @@ class VpnBridgeDesktop implements VpnBridge {
         await confFile.writeAsString(config.toConf());
       }
 
-      // 3) نفّذ الاتصال حسب المنصة
       int exitCode;
       String? errorDetail;
       if (_isWindows) {
@@ -283,10 +263,9 @@ class VpnBridgeDesktop implements VpnBridge {
   }
 
   // ==================================================================
-  // تشغيل الأوامر بأمان (kill عند timeout + إلغاء subscriptions)
+  // _runSafe
   // ==================================================================
 
-  /// يشغّل أمراً ويعيد (exitCode, stdout, stderr) أو null عند timeout.
   Future<(int, String, String)?> _runSafe(
     String exe,
     List<String> args,
@@ -324,9 +303,7 @@ class VpnBridgeDesktop implements VpnBridge {
   // Windows
   // ==================================================================
 
-  /// يعيد المسار الكامل لـ wireguard.exe أو null.
   Future<String?> _findWireGuardWindows() async {
-    // 1) PATH
     try {
       final r = await Process.run('where', ['wireguard.exe'])
           .timeout(_toolCheckTimeout);
@@ -336,7 +313,6 @@ class VpnBridgeDesktop implements VpnBridge {
       }
     } catch (_) {}
 
-    // 2) المسارات الافتراضية
     const candidates = [
       r'C:\Program Files\WireGuard\wireguard.exe',
       r'C:\Program Files (x86)\WireGuard\wireguard.exe',
@@ -347,7 +323,6 @@ class VpnBridgeDesktop implements VpnBridge {
     return null;
   }
 
-  /// يعيد (exitCode, errorDetail)
   Future<(int, String?)> _runWindowsConnect(String confPath) async {
     final exe = await _findWireGuardWindows();
     if (exe == null) {
@@ -383,10 +358,7 @@ class VpnBridgeDesktop implements VpnBridge {
     }
 
     final diag = await _diagnoseWindows(name);
-    return (
-      1,
-      'الخدمة WireGuardTunnel\$$name لم تبدأ خلال 10 ثوانٍ.\n$diag'
-    );
+    return (1, 'الخدمة WireGuardTunnel\$$name لم تبدأ خلال 10 ثوانٍ.\n$diag');
   }
 
   Future<String> _diagnoseWindows(String name) async {
@@ -412,7 +384,7 @@ class VpnBridgeDesktop implements VpnBridge {
   }
 
   // ==================================================================
-  // Linux
+  // Linux / macOS
   // ==================================================================
 
   Future<(int, String?)> _runLinuxConnect(String confPath, String name) async {
@@ -454,10 +426,6 @@ class VpnBridgeDesktop implements VpnBridge {
         '• أو شغّل التطبيق بـ sudo -E.';
     return (1, 'فشل رفع النفق على Linux.\n${errors.join('\n')}\n\n$hint');
   }
-
-  // ==================================================================
-  // macOS
-  // ==================================================================
 
   Future<(int, String?)> _runMacConnect(String confPath, String name) async {
     final r = await _runSafe(
@@ -523,15 +491,12 @@ class VpnBridgeDesktop implements VpnBridge {
       ));
       await _forceDown(config.name);
 
-      // تراجع أسي: 2, 4, 8, 16, 32 ثانية
       final delaySec = (1 << _reconnectAttempts).clamp(2, 30);
       await Future.delayed(Duration(seconds: delaySec));
 
       try {
         await _doConnect(config, fromWatchdog: true);
-      } catch (_) {
-        // _doConnect ستضع الحالة في error، والـ watchdog التالي سيتعامل
-      }
+      } catch (_) {}
     });
   }
 
@@ -553,7 +518,6 @@ class VpnBridgeDesktop implements VpnBridge {
         return r.exitCode == 0 && out.contains('RUNNING');
       }
 
-      // Linux / macOS: جرّب مسارات ip المتعددة
       const ipCandidates = [
         '/sbin/ip',
         '/usr/sbin/ip',
@@ -566,13 +530,12 @@ class VpnBridgeDesktop implements VpnBridge {
           final r = await Process.run(exe, ['link', 'show', name])
               .timeout(const Duration(seconds: 5));
           if (r.exitCode == 0) return true;
-          break; // إذا وُجد ip لكن النفق غير موجود، لا داعي لتجربة مسارات أخرى
+          break;
         } catch (_) {
           continue;
         }
       }
 
-      // macOS: ifconfig
       if (_isMacOS) {
         final r = await Process.run('ifconfig', [name])
             .timeout(const Duration(seconds: 5));
@@ -652,13 +615,12 @@ class VpnBridgeDesktop implements VpnBridge {
   }
 
   // ==================================================================
-  // onNetworkChanged (idempotent — بدون debounce محلي)
+  // onNetworkChanged + _invokeKick
   // ==================================================================
 
   @override
   Future<void> onNetworkChanged({String? networkKey}) async {
     if (_state.status != VpnStatus.connected) return;
-    // الـ controller يدير التوقيت — ننفذ kick مباشرة
     await _invokeKick();
   }
 
@@ -676,7 +638,6 @@ class VpnBridgeDesktop implements VpnBridge {
     await _forceDown(cfg.name);
     await Future.delayed(const Duration(seconds: 1));
 
-    // أعد الاتصال باستخدام conf الموجود (لا نُعيد كتابته)
     (int, String?) r;
     if (_isWindows) {
       r = await _runWindowsConnect(_confPath!);
@@ -724,7 +685,6 @@ class VpnBridgeDesktop implements VpnBridge {
     final alive = await _isTunnelAlive(name);
     if (!alive) return LinkHealth.down;
 
-    // فحص إضافي (Linux/macOS): آخر handshake عبر wg
     if (!_isWindows) {
       try {
         final r = await _runSafe(
@@ -746,28 +706,18 @@ class VpnBridgeDesktop implements VpnBridge {
             }
           }
         }
-      } catch (_) {
-        // wg غير متاح أو فشل — نكتفي بفحص الواجهة
-      }
+      } catch (_) {}
     }
 
     return LinkHealth.good;
   }
 
   // ==================================================================
-  // Kill Switch (stub — TODO للتنفيذ الفعلي)
+  // Kill Switch
   // ==================================================================
 
   @override
   Future<void> setKillSwitch(bool enabled) async {
-    // TODO: تنفيذ فعلي لكل منصة:
-    //   Windows: netsh advfirewall firewall add rule name="VPN_KS" dir=out action=block
-    //            + allow interface=tun0
-    //   Linux:   iptables -P OUTPUT DROP
-    //            + iptables -A OUTPUT -o <tunnel> -j ACCEPT
-    //   macOS:   pfctl -f /etc/pf.vpn.conf
-    //
-    // حالياً: no-op — لا نكسر التطبيق
     stderr.writeln(
       '[VpnBridgeDesktop] setKillSwitch($enabled) — not implemented yet',
     );
@@ -777,7 +727,23 @@ class VpnBridgeDesktop implements VpnBridge {
   Future<bool> isKillSwitchActive() async => false;
 
   // ==================================================================
-  // Android-specific stubs
+  // Autostart / Always-on (Desktop — stubs)
+  // ==================================================================
+
+  @override
+  Future<bool> getAutostart() async => false;
+
+  @override
+  Future<void> setAutostart(bool enabled) async {}
+
+  @override
+  Future<bool> openAlwaysOnSettings() async => false;
+
+  @override
+  Future<bool> requestBatteryOptimizationExemption() async => false;
+
+  // ==================================================================
+  // إضافات
   // ==================================================================
 
   @override
@@ -821,7 +787,6 @@ class VpnBridgeDesktop implements VpnBridge {
     }
   }
 
-  /// emit مع حماية من التكرار (يمنع notifyListeners الزائد في controller).
   void _emit(VpnState s) {
     if (_state.status == s.status &&
         _state.activeConfigName == s.activeConfigName &&
@@ -843,18 +808,12 @@ class VpnBridgeDesktop implements VpnBridge {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-
     _kickDebounce?.cancel();
     _kickDebounce = null;
     _stopWatchdog();
-
-    if (!_controller.isClosed) {
-      _controller.close();
-    }
+    if (!_controller.isClosed) _controller.close();
   }
 
-  /// إعادة التهيئة (بدل dispose نهائي على singleton).
-  /// آمنة للاستدعاء بعد dispose() — تعيد الجسر لحالة نظيفة.
   Future<void> reset() async {
     _disposed = false;
     _initialized = false;
