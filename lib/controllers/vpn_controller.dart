@@ -7,7 +7,7 @@ import '../models/vpn_config.dart';
 import '../models/vpn_log.dart';
 import '../models/vpn_state.dart';
 import '../services/config_store.dart';
-import '../services/network_identity.dart'; // ← يوفّر networkKey (انظر أدناه)
+import '../services/network_identity.dart';
 import '../services/session_persister.dart';
 import '../services/vpn_bridge.dart';
 
@@ -18,6 +18,7 @@ class VpnController extends ChangeNotifier {
 
   StreamSubscription<VpnState>? _stateSub;
   StreamSubscription<LinkHealth>? _healthSub;
+  StreamSubscription<String?>? _networkSub;
   Timer? _networkWatchdog;
 
   // ── صحة الرابط ──────────────────────────────────────────────
@@ -26,7 +27,6 @@ class VpnController extends ChangeNotifier {
   bool get isNetworkUntrusted => _linkHealth == LinkHealth.down;
 
   int _consecutiveFails = 0;
-  static const _failsBeforeSuspect = 1;
   static const _failsBeforeDown = 3; // 3×10s = 30s قبل إعلان الانقطاع
 
   DateTime? _outageStart;
@@ -51,12 +51,11 @@ class VpnController extends ChangeNotifier {
   set killSwitchEnabled(bool v) {
     _killSwitchEnabled = v;
     log('killSwitch = $v');
-    // مزامنة فورية مع الجسر حسب الحالة الحالية
     _syncKillSwitch(v && _linkHealth == LinkHealth.down);
     notifyListeners();
   }
 
-  // ── آخر حالة معروفة (لمقارنة refreshState الهادئ) ───────────
+  // ── آخر حالة معروفة (refreshState الهادئ) ───────────────────
   VpnStatus? _lastLoggedStatus;
 
   // ── تسلسل العمليات ──────────────────────────────────────────
@@ -80,8 +79,9 @@ class VpnController extends ChangeNotifier {
 
   VpnController(this.bridge) {
     _stateSub = bridge.stateStream.listen(_onStateChanged);
-    // إن كان الجسر يدعم healthStream، استخدمه بدل polling
     _healthSub = bridge.healthStream.listen(_applyHealthFromStream);
+    _networkSub =
+        NetworkIdentity.watch().listen(_onNetworkIdentityChanged);
     _startNetworkWatchdog();
     _bootstrap();
   }
@@ -196,6 +196,24 @@ class VpnController extends ChangeNotifier {
   }
 
   // ===========================================================================
+  // تغيّر هوية الشبكة — استجابة فورية (بدون kick)
+  // ===========================================================================
+
+  void _onNetworkIdentityChanged(String? key) {
+    if (key == null || key == _lastNetworkKey) return;
+    final prev = _lastNetworkKey;
+    _lastNetworkKey = key;
+    log('network identity: $prev → $key', level: LogLevel.warn);
+
+    if (!_autoReconnectEnabled) return;
+    if (state.status != VpnStatus.connected) return;
+
+    // تغيّر الشبكة = بداية انقطاع محتمل. لا kick الآن.
+    // الـ watchdog سيتحقق عبر probeHealth() ويعلن good/down.
+    _applyHealth(LinkHealth.suspect);
+  }
+
+  // ===========================================================================
   // Watchdog + صحة النفق
   // ===========================================================================
 
@@ -214,7 +232,7 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    // ⚠️ مهم: نستخدم probeHealth من الجسر (يدرك حالة النفق الفعلية).
+    // صحة النفق من الجسر (يدرك حالة النفق الفعلية، لا الإنترنت العام)
     LinkHealth h;
     try {
       h = await bridge.probeHealth();
@@ -223,19 +241,16 @@ class VpnController extends ChangeNotifier {
       h = LinkHealth.suspect;
     }
 
-    // حدّث networkKey إذا تغيّرت الشبكة فعلاً
+    // تحديث networkKey إن لم يصلنا البث (fallback)
     final key = await NetworkIdentity.currentKey();
     if (key != null && key != _lastNetworkKey) {
-      log('network identity changed: $_lastNetworkKey → $key');
       _lastNetworkKey = key;
-      // لا kick هنا — نتركه للـ health transition
     }
 
     _applyHealth(h);
   }
 
   void _applyHealthFromStream(LinkHealth h) {
-    // الجسر يدفع التغييرات — استخدمها مباشرة (بدون عدّاد)
     _applyHealth(h, fromStream: true);
   }
 
@@ -277,7 +292,6 @@ class VpnController extends ChangeNotifier {
             _lastKickAt = now;
             log('long outage (${outage.inSeconds}s) → onNetworkChanged',
                 level: LogLevel.warn);
-            // لا ننتظر — لا نريد تعطيل الـ watchdog
             unawaited(_safeKick());
           } else {
             log('network restored after ${outage.inSeconds}s — no restart');
@@ -342,7 +356,6 @@ class VpnController extends ChangeNotifier {
   Future<bool> _doConnect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
 
-    // إعادة الضبط قبل بدء اتصال جديد
     _resetHealth();
     _lastKickAt = null;
     _lastNetworkKey = await NetworkIdentity.currentKey();
@@ -417,6 +430,7 @@ class VpnController extends ChangeNotifier {
   @override
   void dispose() {
     _networkWatchdog?.cancel();
+    _networkSub?.cancel();
     _healthSub?.cancel();
     _stateSub?.cancel();
     // ❌ لا نستدعي bridge.dispose() — الـ singleton يُعاش
