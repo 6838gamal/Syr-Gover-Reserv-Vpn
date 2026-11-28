@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
-import '../models/link_health.dart'; 
+import '../models/link_health.dart';
 
 /// جسر VPN لسطح المكتب (Windows / Linux / macOS)
 class VpnBridgeDesktop implements VpnBridge {
