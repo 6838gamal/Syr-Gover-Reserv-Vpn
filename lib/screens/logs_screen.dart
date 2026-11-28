@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../controllers/vpn_controller.dart';
+import '../models/link_health.dart';
 import '../models/vpn_log.dart';
-import '../services/vpn_bridge.dart' show LinkHealth;  // للوصول إلى LinkHealth
 
 class LogsScreen extends StatelessWidget {
   const LogsScreen({super.key});
@@ -58,10 +58,14 @@ class LogsScreen extends StatelessWidget {
                   },
                 ),
                 const SizedBox(width: 6),
-                Text(
-                  'Link: ${ctrl.linkHealth.name}'
-                  '${ctrl.autoReconnectEnabled ? "" : " (auto-reconnect off)"}',
-                  style: const TextStyle(fontSize: 11),
+                Expanded(
+                  child: Text(
+                    'Link: ${ctrl.linkHealth.name}'
+                    '${ctrl.autoReconnectEnabled ? "" : " (auto-reconnect off)"}'
+                    '${ctrl.killSwitchEnabled ? "" : " (kill-switch off)"}',
+                    style: const TextStyle(fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
@@ -86,7 +90,9 @@ class LogsScreen extends StatelessWidget {
                   leading: Text(
                     e.formattedTime,
                     style: const TextStyle(
-                        fontSize: 11, color: Colors.white38),
+                      fontSize: 11,
+                      color: Colors.white38,
+                    ),
                   ),
                   title: SelectableText(
                     e.message,
