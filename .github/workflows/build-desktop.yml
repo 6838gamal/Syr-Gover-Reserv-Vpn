@@ -40,7 +40,7 @@ jobs:
         with:
           flutter-version: '3.27.0'
           channel: 'stable'
-          cache: false                    # ← عطّل الكاش لمنع استخدام .dart_tool قديم
+          cache: false
 
       # ============================================================
       # 4) flutter clean — قبل أي شيء آخر
@@ -132,7 +132,7 @@ jobs:
           Write-Host "✅ Manifest is valid."
 
       # ============================================================
-      # 10) تنظيف شامل قبل البناء — build + .dart_tool + pubspec.lock
+      # 10) تنظيف شامل قبل البناء — build + .dart_tool + pubspec.lock + ephemeral
       # ============================================================
       - name: Clean build directory
         shell: pwsh
@@ -140,23 +140,151 @@ jobs:
           if (Test-Path build) { Remove-Item -Recurse -Force build }
           if (Test-Path .dart_tool) { Remove-Item -Recurse -Force .dart_tool }
           if (Test-Path pubspec.lock) { Remove-Item -Force pubspec.lock }
-          Write-Host "✅ build, .dart_tool, pubspec.lock cleaned."
+          if (Test-Path "windows/flutter/ephemeral") { Remove-Item -Recurse -Force "windows/flutter/ephemeral" }
+          Write-Host "✅ build, .dart_tool, pubspec.lock, windows/flutter/ephemeral cleaned."
 
       # ============================================================
-      # 11) إعادة pub get بعد التنظيف (لتوليد .dart_tool و pubspec.lock)
+      # 11) إعادة pub get بعد التنظيف
       # ============================================================
       - name: Get dependencies (after clean)
         run: flutter pub get
 
       # ============================================================
-      # 12) بناء Release
+      # 11.4) طباعة الملفات الحرجة للتشخيص
       # ============================================================
-      - name: Build Windows Release
+      - name: Dump critical Dart files for diagnostics
+        shell: pwsh
+        run: |
+          Write-Host "=== vpn_bridge.dart (abstract class) ==="
+          if (Test-Path "lib/services/vpn_bridge.dart") {
+            Get-Content "lib/services/vpn_bridge.dart"
+          } else {
+            Write-Warning "vpn_bridge.dart not found!"
+          }
+          Write-Host ""
+          Write-Host "=== Signatures of all bridge implementations ==="
+          Get-ChildItem "lib/services" -Filter "vpn_bridge_*.dart" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host ""
+            Write-Host "--- $($_.Name) ---"
+            Select-String -Path $_.FullName -Pattern 'class\s+\w+\s+implements\s+VpnBridge|@override|Future<|void\s+\w+\(' |
+              ForEach-Object { Write-Host $_.Line }
+          }
+          Write-Host ""
+          Write-Host "=== All imports of vpn_bridge.dart ==="
+          Get-ChildItem "lib" -Recurse -Filter "*.dart" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Select-String -Path $_.FullName -Pattern "import\s+.*vpn_bridge\.dart" |
+                ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }
+            }
+
+      # ============================================================
+      # 11.5) التحقق من تطابق imports
+      # ============================================================
+      - name: Ensure consistent imports of vpn_bridge.dart
+        shell: pwsh
+        run: |
+          $imports = Get-ChildItem "lib" -Recurse -Filter "*.dart" |
+            ForEach-Object {
+              Select-String -Path $_.FullName -Pattern "import\s+['""].*vpn_bridge\.dart" |
+                ForEach-Object { $_.Line.Trim() }
+            } | Sort-Object -Unique
+
+          Write-Host "=== All distinct import forms of vpn_bridge.dart ==="
+          $imports | ForEach-Object { Write-Host $_ }
+
+          $hasRelative = $imports | Where-Object { $_ -match "import\s+['""]\.\.?/" }
+          $hasPackage  = $imports | Where-Object { $_ -match "import\s+['""]package:" }
+
+          if ($hasRelative -and $hasPackage) {
+            Write-Error "❌ MIXED import styles detected! This creates duplicate VpnBridge types."
+            Write-Error "   Relative: $($hasRelative -join ' | ')"
+            Write-Error "   Package:  $($hasPackage -join ' | ')"
+            exit 1
+          }
+          Write-Host "✅ Import styles are consistent."
+
+      # ============================================================
+      # 11.6) dart analyze دقيق على ملفات الجسور
+      # ============================================================
+      - name: Precise dart analyze on bridge files
+        shell: pwsh
+        if: always()
+        run: |
+          $files = @(
+            "lib/services/vpn_bridge.dart",
+            "lib/services/vpn_bridge_android.dart",
+            "lib/services/vpn_bridge_desktop.dart",
+            "lib/services/vpn_bridge_stub.dart"
+          )
+          $failed = $false
+          foreach ($f in $files) {
+            if (Test-Path $f) {
+              Write-Host ""
+              Write-Host "=== dart analyze $f ==="
+              dart analyze $f
+              if ($LASTEXITCODE -ne 0) { $failed = $true }
+            } else {
+              Write-Warning "Missing file: $f"
+            }
+          }
+          if ($failed) {
+            Write-Host "❌ At least one bridge file has analysis errors."
+            exit 1
+          }
+          Write-Host "✅ All bridge files analyze cleanly."
+
+      # ============================================================
+      # 11.7) flutter analyze — يفشل مبكرًا بأخطاء واضحة
+      # ============================================================
+      - name: Static analysis (fail fast with precise errors)
+        shell: pwsh
+        run: |
+          Write-Host "=== flutter analyze (lib only) ==="
+          flutter analyze lib --no-fatal-infos --no-fatal-warnings
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host ""
+            Write-Host "=================================================="
+            Write-Host "❌ STATIC ANALYSIS FAILED — see errors above"
+            Write-Host "=================================================="
+            Write-Host ""
+            Write-Host "Common causes of G76B49859 (missing implementations):"
+            Write-Host "  • A method in vpn_bridge.dart has no default body"
+            Write-Host "    and is not implemented in one of the bridges."
+            Write-Host "  • An import path differs between files"
+            Write-Host "    (relative vs package:), creating two VpnBridge types."
+            Write-Host "  • A new abstract method was added to VpnBridge"
+            Write-Host "    but not yet implemented in all bridges."
+            Write-Host ""
+            Write-Host "Run locally: flutter analyze lib/services/"
+            exit 1
+          }
+          Write-Host "✅ Static analysis passed."
+
+      # ============================================================
+      # 12) بناء Release مع التقاط السجل الكامل
+      # ============================================================
+      - name: Build Windows Release (capture full log)
         shell: pwsh
         run: |
           $env:CL = ""
           $env:LINK = ""
-          flutter build windows --release
+          $log = "build_windows_full.log"
+          flutter build windows --release 2>&1 | Tee-Object -FilePath $log
+          $exit = $LASTEXITCODE
+          if ($exit -ne 0) {
+            Write-Host ""
+            Write-Host "=================================================="
+            Write-Host "❌ BUILD FAILED (exit $exit)"
+            Write-Host "=================================================="
+            Write-Host ""
+            Write-Host "=== Extracted Dart compiler errors ==="
+            Select-String -Path $log -Pattern 'error\s+[A-Z0-9]+:|\.dart\(\d+,\d+\): error' |
+              ForEach-Object { Write-Host $_.Line }
+            Write-Host ""
+            Write-Host "Full log saved to: $log"
+            exit $exit
+          }
+          Write-Host "✅ Build succeeded."
 
       # ============================================================
       # 13) تضمين manifest في EXE (post-build)
@@ -217,6 +345,8 @@ jobs:
         with:
           name: build-logs
           path: |
+            build_windows_full.log
+            extracted.manifest
             build/windows/x64/**/*.log
             build/windows/x64/**/*.txt
             build/windows/x64/**/*.binlog
