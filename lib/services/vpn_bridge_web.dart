@@ -83,7 +83,6 @@ class VpnBridgeWeb implements VpnBridge {
   @override
   Future<LinkHealth> probeHealth() async => LinkHealth.down;
 
-  // ✅ التنفيذ الصريح المطلوب لـ implements VpnBridge
   @override
   Stream<LinkHealth> get healthStream => const Stream.empty();
 
@@ -98,6 +97,22 @@ class VpnBridgeWeb implements VpnBridge {
 
   @override
   Future<bool> isKillSwitchActive() async => false;
+
+  // ------------------------------------------------------------------
+  // Autostart / Always-on (Web — stubs)
+  // ------------------------------------------------------------------
+
+  @override
+  Future<bool> getAutostart() async => false;
+
+  @override
+  Future<void> setAutostart(bool enabled) async {}
+
+  @override
+  Future<bool> openAlwaysOnSettings() async => false;
+
+  @override
+  Future<bool> requestBatteryOptimizationExemption() async => false;
 
   // ------------------------------------------------------------------
   // الحالة
