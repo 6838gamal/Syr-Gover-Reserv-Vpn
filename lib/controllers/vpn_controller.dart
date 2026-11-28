@@ -10,6 +10,7 @@ import '../services/config_store.dart';
 import '../services/network_identity.dart';
 import '../services/session_persister.dart';
 import '../services/vpn_bridge.dart';
+import '../models/link_health.dart'; 
 
 class VpnController extends ChangeNotifier {
   final VpnBridge bridge;
