@@ -68,16 +68,6 @@ abstract class VpnBridge {
   /// - **idempotent**: نفس [networkKey] = لا شيء يحدث.
   /// - **لا يقطع الاتصال** إن أمكن (WireGuard: تحديث endpoint فقط).
   /// - OpenVPN قد يعيد الاتصال؛ مقبول لكن يجب أن ينعكس في [stateStream].
-  ///
-  /// مثال تنفيذ idempotent:
-  /// ```dart
-  /// String? _lastKey;
-  /// Future<void> onNetworkChanged({String? networkKey}) async {
-  ///   if (networkKey != null && networkKey == _lastKey) return;
-  ///   _lastKey = networkKey;
-  ///   await _methodChannel.invokeMethod('reconnect');
-  /// }
-  /// ```
   Future<void> onNetworkChanged({String? networkKey}) async {}
 
   // ── Kill Switch ─────────────────────────────────────────────
@@ -90,6 +80,19 @@ abstract class VpnBridge {
 
   /// هل الـ kill switch مفعّل حالياً على مستوى النظام؟
   Future<bool> isKillSwitchActive() async => false;
+
+  // ── Autostart / Always-on (Android فقط) ─────────────────────
+  /// هل التشغيل التلقائي عند الإقلاع مفعّل؟ (Android فقط)
+  Future<bool> getAutostart() async => false;
+
+  /// تفعيل/تعطيل التشغيل التلقائي عند الإقلاع.
+  Future<void> setAutostart(bool enabled) async {}
+
+  /// فتح إعدادات Always-on VPN في النظام.
+  Future<bool> openAlwaysOnSettings() async => false;
+
+  /// طلب إعفاء من تحسين البطارية.
+  Future<bool> requestBatteryOptimizationExemption() async => false;
 
   // ── إضافات ──────────────────────────────────────────────────
   Future<String> getNotificationErrorLog() async => '';
