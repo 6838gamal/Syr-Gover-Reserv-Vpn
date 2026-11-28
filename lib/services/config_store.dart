@@ -80,6 +80,7 @@ class ConfigStore {
     await _storage.write(key: _key, value: raw);
   }
 
+  /// يضيف إعداداً جديداً. إذا كان الاسم موجوداً، **يستبدله**.
   Future<void> add(VpnConfig config) => _synchronized(() async {
         final all = await loadAll();
         all.removeWhere((c) => c.name == config.name);
@@ -93,11 +94,26 @@ class ConfigStore {
         await saveAll(all);
       });
 
+  /// يحدّث إعداداً موجوداً.
+  /// - إذا لم يوجد `originalName` → false
+  /// - إذا تغيّر الاسم و`updated.name` موجود مسبقاً → false (تعارض)
+  /// - خلاف ذلك → true
   Future<bool> update(String originalName, VpnConfig updated) =>
       _synchronized(() async {
         final all = await loadAll();
         final idx = all.indexWhere((c) => c.name == originalName);
         if (idx < 0) return false;
+
+        // منع تعارض الأسماء عند إعادة التسمية
+        if (originalName != updated.name) {
+          final conflict = all.any((c) => c.name == updated.name);
+          if (conflict) {
+            debugPrint(
+                'ConfigStore.update: name "${updated.name}" already exists');
+            return false;
+          }
+        }
+
         all[idx] = updated;
         await saveAll(all);
         return true;
