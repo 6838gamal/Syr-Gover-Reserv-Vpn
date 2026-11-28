@@ -76,6 +76,26 @@ class MyVpnService : VpnService() {
         var isRunning: Boolean = false
             private set
 
+        /**
+         * سياق التطبيق — يُستخدم من MyVpnHealth.probeHealth().
+         * null عندما تكون الخدمة متوقفة.
+         */
+        @Volatile
+        var appContext: Context? = null
+            private set
+
+        /**
+         * آخر حالة معروفة للنفق — يحدّثها WgTunnel.onStateChange.
+         * تُستخدم من MyVpnHealth.probeHealth().
+         */
+        @Volatile
+        var currentTunnelState: Tunnel.State = Tunnel.State.DOWN
+            private set
+
+        internal fun setTunnelState(state: Tunnel.State) {
+            currentTunnelState = state
+        }
+
         @Volatile
         private var instance: MyVpnService? = null
 
@@ -156,6 +176,7 @@ class MyVpnService : VpnService() {
         Log.d(TAG, "onCreate")
         instance = this
         isRunning = true
+        appContext = applicationContext  // ← جديد
 
         try {
             createChannel()
@@ -224,6 +245,8 @@ class MyVpnService : VpnService() {
         tunnel = null
         instance = null
         isRunning = false
+        appContext = null                                    // ← جديد
+        currentTunnelState = Tunnel.State.DOWN               // ← جديد
         try { VpnStateBus.reset() } catch (_: Throwable) {}
         stopForegroundCompat()
         super.onDestroy()
@@ -380,7 +403,6 @@ class MyVpnService : VpnService() {
                     NotificationErrorLogger.log(this@MyVpnService, "connect/setStateUp", e, "config=$currentConfigName")
                     try { VpnStateBus.emit("error", "فشل النفق: ${e.message}") } catch (_: Throwable) {}
                     updateNotification("فشل الاتصال")
-                    // ✅ مسح lastArgs و currentConfigName عند فشل الاتصال
                     tunnel = null
                     lastArgs = null
                     currentConfigName = null
@@ -436,7 +458,9 @@ class MyVpnService : VpnService() {
 
         val privateKey = req("privateKey")
         val address = req("address")
-        val dns = req("dns")
+        // ✅ DNS: نستخدم القيمة المرسلة، أو الافتراضي إن كانت فارغة
+        val dns = (args["dns"] as? String)?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: "1.1.1.1"
         val peerPublicKey = req("peerPublicKey")
         val endpoint = req("endpoint")
         val allowedIps = req("allowedIps")
@@ -460,7 +484,6 @@ class MyVpnService : VpnService() {
             else -> 1280
         }
 
-        // ✅ log مبسّط (بدون endpoint — لا نستخدم BuildConfig)
         Log.d(TAG, "MTU: $mtu, Keepalive: $keepalive")
 
         val iface = com.wireguard.config.Interface.Builder()
@@ -510,13 +533,14 @@ class MyVpnService : VpnService() {
 
     private fun startForegroundSafe(n: Notification) {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // API 34+ → specialUse
                 startForeground(
-                    NOTIF_ID,
-                    n,
+                    NOTIF_ID, n,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 )
             } else {
+                // API 29-33 (وأقل) → بدون type (يعمل افتراضياً)
                 startForeground(NOTIF_ID, n)
             }
         } catch (e: Throwable) {
@@ -572,7 +596,7 @@ class MyVpnService : VpnService() {
 }
 
 // ------------------------------------------------------------------
-// WgTunnel
+// WgTunnel — يُبلّغ MyVpnService بحالة النفق
 // ------------------------------------------------------------------
 class WgTunnel(
     private val configName: String = "VPN Config"
@@ -583,6 +607,7 @@ class WgTunnel(
 
     override fun onStateChange(newState: Tunnel.State) {
         _state = newState
+        MyVpnService.setTunnelState(newState)  // ← جديد: مزامنة لـ probeHealth
         Log.d("VPN_TAG", "WgTunnel[$configName].onStateChange → $newState")
         try {
             when (newState) {
