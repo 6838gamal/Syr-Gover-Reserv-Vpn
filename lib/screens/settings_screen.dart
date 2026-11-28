@@ -4,8 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../main.dart';
-import '../services/vpn_bridge_android.dart';
+import '../controllers/vpn_controller.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -22,38 +21,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _isAndroid = !kIsWeb && Platform.isAndroid;
-    if (_isAndroid) _loadAutostart();
+    if (_isAndroid) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadAutostart());
+    }
   }
 
   Future<void> _loadAutostart() async {
     final ctrl = context.read<VpnController>();
-    if (ctrl.bridge is VpnBridgeAndroid) {
-      final v = await (ctrl.bridge as VpnBridgeAndroid).isAutostartEnabled();
-      if (mounted) setState(() => _autostart = v);
-    }
+    final v = await ctrl.bridge.getAutostart();
+    if (mounted) setState(() => _autostart = v);
   }
 
   Future<void> _toggleAutostart(bool v) async {
     final ctrl = context.read<VpnController>();
-    if (ctrl.bridge is VpnBridgeAndroid) {
-      await (ctrl.bridge as VpnBridgeAndroid).setAutostart(v);
-      setState(() => _autostart = v);
-    }
+    await ctrl.bridge.setAutostart(v);
+    if (mounted) setState(() => _autostart = v);
   }
 
   Future<void> _openAlwaysOn() async {
     final ctrl = context.read<VpnController>();
-    if (ctrl.bridge is VpnBridgeAndroid) {
-      await (ctrl.bridge as VpnBridgeAndroid).openAlwaysOnSettings();
-    }
+    await ctrl.bridge.openAlwaysOnSettings();
   }
 
   Future<void> _openBattery() async {
     final ctrl = context.read<VpnController>();
-    if (ctrl.bridge is VpnBridgeAndroid) {
-      await (ctrl.bridge as VpnBridgeAndroid)
-          .requestBatteryOptimizationExemption();
-    }
+    await ctrl.bridge.requestBatteryOptimizationExemption();
   }
 
   @override
@@ -69,6 +61,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('يحاول الاتصال بعد عودة الإنترنت'),
             value: ctrl.autoReconnectEnabled,
             onChanged: (v) => ctrl.autoReconnectEnabled = v,
+          ),
+          SwitchListTile(
+            title: const Text('Kill Switch'),
+            subtitle: const Text(
+                'يمنع كل الترافيك عند سقوط النفق — حتى يتعافى'),
+            value: ctrl.killSwitchEnabled,
+            onChanged: (v) => ctrl.killSwitchEnabled = v,
           ),
           if (_isAndroid) ...[
             const Divider(),
