@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
 import 'vpn_bridge.dart';
+import '../models/link_health.dart'; 
 
 class VpnBridgeAndroid implements VpnBridge {
   static final VpnBridgeAndroid _instance = VpnBridgeAndroid._internal();
