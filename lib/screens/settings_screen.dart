@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../controllers/vpn_controller.dart';
+import '../models/link_health.dart'; 
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
