@@ -7,11 +7,9 @@ import '../models/vpn_config.dart';
 import '../models/vpn_log.dart';
 import '../models/vpn_state.dart';
 import '../services/config_store.dart';
-import '../services/internet_check.dart';
+import '../services/network_identity.dart'; // ← يوفّر networkKey (انظر أدناه)
 import '../services/session_persister.dart';
 import '../services/vpn_bridge.dart';
-
-enum LinkHealth { unknown, good, suspect, down }
 
 class VpnController extends ChangeNotifier {
   final VpnBridge bridge;
@@ -19,33 +17,50 @@ class VpnController extends ChangeNotifier {
   final SessionPersister _session = SessionPersister();
 
   StreamSubscription<VpnState>? _stateSub;
+  StreamSubscription<LinkHealth>? _healthSub;
   Timer? _networkWatchdog;
 
-  // ── عدّاد فشل متتالي بدل boolean هشّ ─────────────────────────
-  int _consecutiveFails = 0;
-  static const _failsBeforeSuspect = 1;
-  static const _failsBeforeDown = 3;   // 3×10s = 30s قبل إعلان الانقطاع
-
+  // ── صحة الرابط ──────────────────────────────────────────────
   LinkHealth _linkHealth = LinkHealth.unknown;
   LinkHealth get linkHealth => _linkHealth;
   bool get isNetworkUntrusted => _linkHealth == LinkHealth.down;
 
+  int _consecutiveFails = 0;
+  static const _failsBeforeSuspect = 1;
+  static const _failsBeforeDown = 3; // 3×10s = 30s قبل إعلان الانقطاع
+
   DateTime? _outageStart;
   DateTime? _lastKickAt;
+  String? _lastNetworkKey;
 
-  // لا kick إلا إذا طال الانقطاع أو مرّ وقت كافٍ منذ آخر kick
   static const _minKickInterval = Duration(seconds: 90);
   static const _restartAfterOutage = Duration(seconds: 60);
   static const _watchdogInterval = Duration(seconds: 10);
 
+  // ── إعدادات ─────────────────────────────────────────────────
   bool _autoReconnectEnabled = true;
+  bool get autoReconnectEnabled => _autoReconnectEnabled;
+  set autoReconnectEnabled(bool v) {
+    _autoReconnectEnabled = v;
+    log('autoReconnect = $v');
+    notifyListeners();
+  }
 
-  // ✅ آخر حالة معروفة — لمقارنة refreshState الهادئ
+  bool _killSwitchEnabled = true;
+  bool get killSwitchEnabled => _killSwitchEnabled;
+  set killSwitchEnabled(bool v) {
+    _killSwitchEnabled = v;
+    log('killSwitch = $v');
+    // مزامنة فورية مع الجسر حسب الحالة الحالية
+    _syncKillSwitch(v && _linkHealth == LinkHealth.down);
+    notifyListeners();
+  }
+
+  // ── آخر حالة معروفة (لمقارنة refreshState الهادئ) ───────────
   VpnStatus? _lastLoggedStatus;
 
-  // ── قفل تزامن لمنع اختناق الأحداث ────────────────────────────
+  // ── تسلسل العمليات ──────────────────────────────────────────
   Future<void> _opChain = Future.value();
-
   Future<T> _serialize<T>(Future<T> Function() op) {
     final prev = _opChain;
     final completer = Completer<T>();
@@ -59,16 +74,21 @@ class VpnController extends ChangeNotifier {
     return completer.future;
   }
 
+  // ── السجلات ─────────────────────────────────────────────────
   final List<VpnLog> _logs = [];
   List<VpnLog> get logs => List.unmodifiable(_logs);
 
   VpnController(this.bridge) {
     _stateSub = bridge.stateStream.listen(_onStateChanged);
+    // إن كان الجسر يدعم healthStream، استخدمه بدل polling
+    _healthSub = bridge.healthStream.listen(_applyHealthFromStream);
     _startNetworkWatchdog();
     _bootstrap();
   }
 
-  // ------------------------- Bootstrap -------------------------
+  // ===========================================================================
+  // Bootstrap
+  // ===========================================================================
 
   Future<void> _bootstrap() async {
     log('controller initialized');
@@ -119,7 +139,9 @@ class VpnController extends ChangeNotifier {
     }
   }
 
-  // ------------------------- Logs -------------------------
+  // ===========================================================================
+  // السجلات
+  // ===========================================================================
 
   void log(String message, {LogLevel level = LogLevel.info}) {
     _logs.add(VpnLog(message, level: level));
@@ -138,18 +160,11 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ------------------------- Getters -------------------------
-
   VpnState get state => bridge.currentState;
 
-  bool get autoReconnectEnabled => _autoReconnectEnabled;
-  set autoReconnectEnabled(bool v) {
-    _autoReconnectEnabled = v;
-    log('autoReconnect = $v');
-    notifyListeners();
-  }
-
-  // ------------------------- State events -------------------------
+  // ===========================================================================
+  // أحداث الحالة
+  // ===========================================================================
 
   void _onStateChanged(VpnState s) {
     if (_lastLoggedStatus != s.status || s.errorMessage != null) {
@@ -159,11 +174,10 @@ class VpnController extends ChangeNotifier {
     }
 
     if (s.status == VpnStatus.connected) {
-      _persistSession();
-      // عند الاتصال، اضبط الحالة على good إن لم نكن في انقطاع
       if (_linkHealth == LinkHealth.unknown) {
         _linkHealth = LinkHealth.good;
       }
+      _persistSession();
     } else if (s.status == VpnStatus.disconnected ||
         s.status == VpnStatus.error) {
       _resetHealth();
@@ -181,7 +195,9 @@ class VpnController extends ChangeNotifier {
     log('session persisted ($name, since=$since)');
   }
 
-  // ------------------------- Watchdog -------------------------
+  // ===========================================================================
+  // Watchdog + صحة النفق
+  // ===========================================================================
 
   void _startNetworkWatchdog() {
     _networkWatchdog?.cancel();
@@ -192,68 +208,111 @@ class VpnController extends ChangeNotifier {
 
   Future<void> _tickWatchdog() async {
     if (!_autoReconnectEnabled) return;
+
     if (state.status != VpnStatus.connected) {
-      // لسنا متصلين → أعد ضبط الصحة كي يبدأ العد من جديد عند الاتصال
       _resetHealth();
       return;
     }
 
-    final online = await hasInternet();
+    // ⚠️ مهم: نستخدم probeHealth من الجسر (يدرك حالة النفق الفعلية).
+    LinkHealth h;
+    try {
+      h = await bridge.probeHealth();
+    } catch (e) {
+      log('probeHealth error: $e', level: LogLevel.warn);
+      h = LinkHealth.suspect;
+    }
+
+    // حدّث networkKey إذا تغيّرت الشبكة فعلاً
+    final key = await NetworkIdentity.currentKey();
+    if (key != null && key != _lastNetworkKey) {
+      log('network identity changed: $_lastNetworkKey → $key');
+      _lastNetworkKey = key;
+      // لا kick هنا — نتركه للـ health transition
+    }
+
+    _applyHealth(h);
+  }
+
+  void _applyHealthFromStream(LinkHealth h) {
+    // الجسر يدفع التغييرات — استخدمها مباشرة (بدون عدّاد)
+    _applyHealth(h, fromStream: true);
+  }
+
+  void _applyHealth(LinkHealth h, {bool fromStream = false}) {
     final now = DateTime.now();
 
-    if (!online) {
-      _consecutiveFails++;
-      if (_consecutiveFails >= _failsBeforeDown) {
-        if (_linkHealth != LinkHealth.down) {
+    switch (h) {
+      case LinkHealth.down:
+        if (!fromStream) _consecutiveFails++;
+        final enough = fromStream || _consecutiveFails >= _failsBeforeDown;
+
+        if (enough && _linkHealth != LinkHealth.down) {
           _linkHealth = LinkHealth.down;
           _outageStart = now;
-          log('network DOWN (fails=$_consecutiveFails)',
-              level: LogLevel.warn);
+          log('tunnel DOWN → block traffic', level: LogLevel.warn);
+          _syncKillSwitch(true);
           notifyListeners();
         }
-      } else if (_consecutiveFails >= _failsBeforeSuspect &&
-          _linkHealth == LinkHealth.good) {
-        _linkHealth = LinkHealth.suspect;
-        log('network suspect (fails=$_consecutiveFails)',
-            level: LogLevel.warn);
-        notifyListeners();
-      }
-      return;
-    }
 
-    // الإنترنت موجود الآن
-    _consecutiveFails = 0;
-
-    if (_linkHealth == LinkHealth.down) {
-      final outage = _outageStart != null
-          ? now.difference(_outageStart!)
-          : Duration.zero;
-      _outageStart = null;
-      _linkHealth = LinkHealth.good;
-
-      // ⚠️ kick فقط إذا طال الانقطاع
-      if (outage >= _restartAfterOutage && _canKick()) {
-        _lastKickAt = now;
-        log('long outage (${outage.inSeconds}s) → restarting tunnel',
-            level: LogLevel.warn);
-        try {
-          await bridge.onNetworkChanged();
-        } catch (e) {
-          log('restart failed: $e', level: LogLevel.error);
+      case LinkHealth.suspect:
+        if (!fromStream) _consecutiveFails++;
+        if (_linkHealth == LinkHealth.good) {
+          _linkHealth = LinkHealth.suspect;
+          log('tunnel suspect', level: LogLevel.warn);
+          notifyListeners();
         }
-      } else {
-        log('network restored after ${outage.inSeconds}s — no restart',
-            level: LogLevel.info);
-      }
-      notifyListeners();
-    } else if (_linkHealth != LinkHealth.good) {
-      _linkHealth = LinkHealth.good;
-      notifyListeners();
+
+      case LinkHealth.good:
+        _consecutiveFails = 0;
+        if (_linkHealth == LinkHealth.down) {
+          final outage = _outageStart != null
+              ? now.difference(_outageStart!)
+              : Duration.zero;
+          _outageStart = null;
+          _linkHealth = LinkHealth.good;
+          _syncKillSwitch(false);
+
+          if (outage >= _restartAfterOutage && _canKick()) {
+            _lastKickAt = now;
+            log('long outage (${outage.inSeconds}s) → onNetworkChanged',
+                level: LogLevel.warn);
+            // لا ننتظر — لا نريد تعطيل الـ watchdog
+            unawaited(_safeKick());
+          } else {
+            log('network restored after ${outage.inSeconds}s — no restart');
+          }
+          notifyListeners();
+        } else if (_linkHealth != LinkHealth.good) {
+          _linkHealth = LinkHealth.good;
+          notifyListeners();
+        }
+
+      case LinkHealth.unknown:
+        break;
     }
-    // الإنترنت موجود باستمرار → لا kick، لا log
+  }
+
+  Future<void> _safeKick() async {
+    try {
+      await bridge.onNetworkChanged(networkKey: _lastNetworkKey);
+    } catch (e) {
+      log('onNetworkChanged error: $e', level: LogLevel.error);
+    }
+  }
+
+  Future<void> _syncKillSwitch(bool on) async {
+    if (!_killSwitchEnabled && on) return;
+    try {
+      await bridge.setKillSwitch(on);
+      log('killSwitch → $on');
+    } catch (e) {
+      log('setKillSwitch error: $e', level: LogLevel.error);
+    }
   }
 
   void _resetHealth() {
+    final wasDown = _linkHealth == LinkHealth.down;
     if (_consecutiveFails != 0 ||
         _linkHealth == LinkHealth.down ||
         _linkHealth == LinkHealth.suspect) {
@@ -262,6 +321,9 @@ class VpnController extends ChangeNotifier {
       _outageStart = null;
       notifyListeners();
     }
+    if (wasDown) {
+      unawaited(_syncKillSwitch(false));
+    }
   }
 
   bool _canKick() {
@@ -269,7 +331,9 @@ class VpnController extends ChangeNotifier {
     return DateTime.now().difference(_lastKickAt!) >= _minKickInterval;
   }
 
-  // ------------------------- Connect / Disconnect -------------------------
+  // ===========================================================================
+  // الاتصال / الفصل
+  // ===========================================================================
 
   Future<bool> connect(VpnConfig config) {
     return _serialize(() => _doConnect(config));
@@ -277,6 +341,11 @@ class VpnController extends ChangeNotifier {
 
   Future<bool> _doConnect(VpnConfig config) async {
     log('connect requested: ${config.name} → ${config.endpoint}');
+
+    // إعادة الضبط قبل بدء اتصال جديد
+    _resetHealth();
+    _lastKickAt = null;
+    _lastNetworkKey = await NetworkIdentity.currentKey();
 
     try {
       final notifOk = await bridge.requestNotificationPermission()
@@ -310,16 +379,19 @@ class VpnController extends ChangeNotifier {
           throw TimeoutException('connect timeout');
         },
       );
-      _resetHealth();
+      _linkHealth = LinkHealth.good;
       log('connect() returned');
       return true;
     } on PlatformException catch (e) {
       log('PlatformException: ${e.code} ${e.message}', level: LogLevel.error);
+      _resetHealth();
       return false;
     } on TimeoutException {
+      _resetHealth();
       return false;
     } catch (e) {
       log('connect error: $e', level: LogLevel.error);
+      _resetHealth();
       return false;
     }
   }
@@ -338,11 +410,16 @@ class VpnController extends ChangeNotifier {
     });
   }
 
+  // ===========================================================================
+  // Dispose
+  // ===========================================================================
+
   @override
   void dispose() {
     _networkWatchdog?.cancel();
+    _healthSub?.cancel();
     _stateSub?.cancel();
-    // ❌ لا تنادِ bridge.dispose() — الـ singleton يُعاش
+    // ❌ لا نستدعي bridge.dispose() — الـ singleton يُعاش
     super.dispose();
   }
 }
