@@ -8,7 +8,7 @@ import 'vpn_bridge.dart';
 ///
 /// كل الدوال تعيد قيماً آمنة (false / null / empty) بدون crash.
 /// هذا الملف لا يُستورد على المنصات الأخرى بفضل conditional import
-/// في `vpn_factory.dart`.
+/// في `vpn_bridge_factory.dart`.
 class VpnBridgeWeb implements VpnBridge {
   final _controller = StreamController<VpnState>.broadcast();
 
@@ -64,15 +64,37 @@ class VpnBridgeWeb implements VpnBridge {
   }
 
   @override
-  Future<void> kick() async {
+  Future<bool> isConnected() async => false;
+
+  // ------------------------------------------------------------------
+  // الشبكة
+  // ------------------------------------------------------------------
+
+  @override
+  Future<void> onNetworkChanged({String? networkKey}) async {
+    // لا شيء على الويب
+  }
+
+  // ------------------------------------------------------------------
+  // صحة النفق
+  // ------------------------------------------------------------------
+
+  @override
+  Future<LinkHealth> probeHealth() async => LinkHealth.down;
+
+  // healthStream: افتراضي Stream.empty() كافٍ
+
+  // ------------------------------------------------------------------
+  // Kill Switch
+  // ------------------------------------------------------------------
+
+  @override
+  Future<void> setKillSwitch(bool enabled) async {
     // لا شيء على الويب
   }
 
   @override
-  Future<bool> isConnected() async => false;
-
-  @override
-  Future<void> onNetworkChanged() async {}
+  Future<bool> isKillSwitchActive() async => false;
 
   // ------------------------------------------------------------------
   // الحالة
@@ -123,7 +145,9 @@ class VpnBridgeWeb implements VpnBridge {
   // ------------------------------------------------------------------
 
   @override
-  void dispose() => _controller.close();
+  void dispose() {
+    if (!_controller.isClosed) _controller.close();
+  }
 }
 
 VpnBridge createVpnBridge() => VpnBridgeWeb();
