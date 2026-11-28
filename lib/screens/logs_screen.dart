@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../main.dart';   // VpnController, VpnLog, LogLevel
-import '../services/vpn_bridge_android.dart'; // للوصول إلى refreshState
+import '../controllers/vpn_controller.dart';
+import '../models/vpn_log.dart';
+import '../services/vpn_bridge.dart' show LinkHealth;  // للوصول إلى LinkHealth
 
 class LogsScreen extends StatelessWidget {
   const LogsScreen({super.key});
@@ -16,7 +17,6 @@ class LogsScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('سجل الاتصال'),
         actions: [
-          // ✅ زر تحديث السجل لسحب الأخطاء المخفية من Kotlin
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'تحديث السجل',
@@ -35,6 +35,38 @@ class LogsScreen extends StatelessWidget {
             onPressed: ctrl.clearLogs,
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(32),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            color: Colors.white10,
+            child: Row(
+              children: [
+                Icon(
+                  switch (ctrl.linkHealth) {
+                    LinkHealth.good => Icons.check_circle,
+                    LinkHealth.suspect => Icons.warning_amber,
+                    LinkHealth.down => Icons.cancel,
+                    LinkHealth.unknown => Icons.help_outline,
+                  },
+                  size: 14,
+                  color: switch (ctrl.linkHealth) {
+                    LinkHealth.good => Colors.green,
+                    LinkHealth.suspect => Colors.orange,
+                    LinkHealth.down => Colors.red,
+                    LinkHealth.unknown => Colors.grey,
+                  },
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Link: ${ctrl.linkHealth.name}'
+                  '${ctrl.autoReconnectEnabled ? "" : " (auto-reconnect off)"}',
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       body: logs.isEmpty
           ? const Center(child: Text('لا توجد سجلات بعد'))
@@ -53,7 +85,8 @@ class LogsScreen extends StatelessWidget {
                   dense: true,
                   leading: Text(
                     e.formattedTime,
-                    style: const TextStyle(fontSize: 11, color: Colors.white38),
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.white38),
                   ),
                   title: SelectableText(
                     e.message,
