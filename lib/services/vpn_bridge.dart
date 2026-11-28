@@ -1,6 +1,6 @@
+import '../models/link_health.dart';
 import '../models/vpn_config.dart';
 import '../models/vpn_state.dart';
-import '../models/link_health.dart'; 
 
 class VpnException implements Exception {
   final String message;
@@ -10,21 +10,6 @@ class VpnException implements Exception {
   @override
   String toString() => 'VpnException($code): $message';
 }
-
-/// صحة الرابط من منظور النفق نفسه (وليس من منظور الإنترنت العام).
-//enum LinkHealth {
-  /// لم نتحقق بعد (بداية التشغيل أو بعد الاتصال مباشرة).
- // unknown,
-
-  /// النفق يمرر ترافيك طبيعي.
- // good,
-
-  /// تذبذب/تأخير لكن النفق لم يسقط.
-//  suspect,
-
-  /// النفق لا يمرر ترافيك — يجب اعتبار الشبكة غير موثوقة.
-//  down,
-//}
 
 abstract class VpnBridge {
   // ── دورة الحياة ─────────────────────────────────────────────
