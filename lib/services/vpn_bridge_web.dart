@@ -83,7 +83,9 @@ class VpnBridgeWeb implements VpnBridge {
   @override
   Future<LinkHealth> probeHealth() async => LinkHealth.down;
 
-  // healthStream: افتراضي Stream.empty() كافٍ
+  // ✅ التنفيذ الصريح المطلوب لـ implements VpnBridge
+  @override
+  Stream<LinkHealth> get healthStream => const Stream.empty();
 
   // ------------------------------------------------------------------
   // Kill Switch
