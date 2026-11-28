@@ -48,7 +48,6 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         Log.d(TAG, "MainActivity.onResume")
-        // ✅ تحرير أي طلب صلاحية معلّق (المستخدم قد يكون عاد من الحوار)
         if (pendingPermissionResult != null) {
             Log.w(TAG, "onResume: releasing stale permission result")
             try { pendingPermissionResult?.success(false) } catch (_: Throwable) {}
@@ -80,7 +79,6 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         Log.d(TAG, "configureFlutterEngine")
 
-        // VpnStateBus مُهيأ في MyVpnApp — لكن نُكرر للأمان
         try { VpnStateBus.init(this) } catch (_: Throwable) {}
 
         MethodChannel(engine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
@@ -101,7 +99,6 @@ class MainActivity : FlutterActivity() {
                             result.success(null)
                         }
                         "isConnected" -> {
-                            // ✅ state بدل isRunning
                             val state = VpnStateBus.snapshot()["state"] as? String
                             val connected = state == "connected"
                             Log.d(TAG, "isConnected → $connected (state=$state)")
@@ -153,6 +150,25 @@ class MainActivity : FlutterActivity() {
                             result.success(isIgnoringBatteryOptimizations())
                         }
                         "openAppSettings" -> handleOpenAppSettings(result)
+
+                        // ✅ جديدة
+                        "probeHealth" -> {
+                            val health = MyVpnHealth.probeHealth()
+                            Log.d(TAG, "probeHealth → $health")
+                            result.success(health)
+                        }
+                        "setKillSwitch" -> {
+                            val enabled = call.argument<Boolean>("enabled") ?: false
+                            Log.d(TAG, "setKillSwitch → $enabled")
+                            MyVpnHealth.setKillSwitch(applicationContext, enabled)
+                            result.success(null)
+                        }
+                        "isKillSwitchActive" -> {
+                            val active = MyVpnHealth.isKillSwitchActive(applicationContext)
+                            Log.d(TAG, "isKillSwitchActive → $active")
+                            result.success(active)
+                        }
+
                         else -> {
                             Log.w(TAG, "unknown method: ${call.method}")
                             result.notImplemented()
@@ -170,7 +186,6 @@ class MainActivity : FlutterActivity() {
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
                     Log.d(TAG, "EventChannel onListen")
-                    // ✅ attachSink يرسل snapshot أولية ذرّياً
                     VpnStateBus.attachSink(sink)
                 }
                 override fun onCancel(args: Any?) {
